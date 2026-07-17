@@ -542,17 +542,35 @@ mosquitto_sub -h "ca15b49bc8b442638f0cade1e45585ce.s1.eu.hivemq.cloud" \
 
 ### 使用方式
 
-**定时触发**：配置 `interval` 后，Agent 自动按间隔拍照识别并上报结果。
+**定时触发**：配置 `interval` 后启动 Agent，自动按间隔拍照识别并上报。也可通过 MQTT 指令动态启停。
 
-**手动触发**：向 MQTT 命令主题发送任意消息：
+**MQTT 指令控制**：向 `edge/{id}/ocr/command` 发送 JSON 指令：
+
+| 指令 | 说明 |
+|------|------|
+| `{"action":"start"}` | 开始定时 OCR（使用配置的 interval） |
+| `{"action":"start","interval":10}` | 开始定时 OCR，自定义间隔 10 秒 |
+| `{"action":"stop"}` | 停止定时 OCR |
+| `{"action":"snapshot"}` | 立即执行一次 OCR（结果 trigger 为 `"command"`） |
+
+示例：
 
 ```bash
+# 开始定时 OCR（每 30 秒）
 mosquitto_pub -h "ca15b49bc8b442638f0cade1e45585ce.s1.eu.hivemq.cloud" \
   -p 8883 --cafile /etc/ssl/certs/ca-certificates.crt \
   -u "liyankun" -P "liyankun152455A" \
   -t "edge/pi-001/ocr/command" \
-  -m '{}'
+  -m '{"action":"start","interval":10}'
+
+# 立即执行一次
+mosquitto_pub ... -m '{"action":"snapshot"}'
+
+# 停止定时 OCR
+mosquitto_pub ... -m '{"action":"stop"}'
 ```
+
+> 兼容旧版：发送空消息 `{}` 或非 JSON 消息默认触发一次 `snapshot`。
 
 **结果上报**：（订阅 `edge/{id}/ocr/result`）：
 
