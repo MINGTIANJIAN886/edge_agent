@@ -16,6 +16,7 @@ import (
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/user/agent/internal/config"
+	"github.com/user/agent/internal/ocr"
 	"github.com/user/agent/internal/ota"
 )
 
@@ -176,6 +177,16 @@ func PublishTools(client mqtt.Client, deviceID, topic string) {
 			},
 		},
 		{
+			Name:        "run_ocr",
+			Description: "Trigger OCR text recognition on the device camera and return results",
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]SchemaProperty{
+					"conf_threshold": {Type: "number", Description: "Confidence threshold (0-1)"},
+				},
+			},
+		},
+		{
 			Name:        "check_update",
 			Description: "Check for model updates from the OTA server and apply if available",
 			InputSchema: InputSchema{
@@ -237,6 +248,8 @@ func SubscribeCalls(client mqtt.Client, deviceID, callTopic, inferenceURL string
 			resp = handleGetLogs(req)
 		case "detect_objects":
 			resp = handleDetect(inferenceURL, req)
+		case "run_ocr":
+			resp = handleRunOCR(cfg, req)
 		case "check_update":
 			resp = handleCheckUpdate(cfg, client, deviceID, req)
 		case "rollback_model":
@@ -372,6 +385,22 @@ func handleDetect(inferenceURL string, req MCPCallRequest) MCPCallResponse {
 		return MCPCallResponse{ID: req.ID, Success: false, Error: string(respBody)}
 	}
 
+	return MCPCallResponse{ID: req.ID, Success: true, Result: result}
+}
+
+func handleRunOCR(cfg *config.Config, req MCPCallRequest) MCPCallResponse {
+	scriptPath := cfg.OCR.ScriptPath
+	if scriptPath == "" {
+		scriptPath = "/opt/agent/edge_ocr.py"
+	}
+	confThreshold := cfg.OCR.ConfThreshold
+	if t, ok := req.Params["conf_threshold"].(float64); ok {
+		confThreshold = t
+	}
+	result, err := ocr.RunOCRFromMCP(scriptPath, confThreshold)
+	if err != nil {
+		return MCPCallResponse{ID: req.ID, Success: false, Error: err.Error()}
+	}
 	return MCPCallResponse{ID: req.ID, Success: true, Result: result}
 }
 

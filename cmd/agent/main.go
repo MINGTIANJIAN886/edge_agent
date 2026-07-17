@@ -19,6 +19,7 @@ import (
 	"github.com/user/agent/internal/enroll"
 	"github.com/user/agent/internal/heartbeat"
 	"github.com/user/agent/internal/mcp"
+	"github.com/user/agent/internal/ocr"
 	"github.com/user/agent/internal/ota"
 	"github.com/user/agent/internal/remote"
 )
@@ -109,6 +110,10 @@ func main() {
 		mcp.PublishTools(c, cfg.DeviceID, cfg.MQTT.Topic.MCPRegister)
 		remote.SubscribeCommands(c, cfg.DeviceID, cfg.MQTT.Topic.Command)
 		download.SubscribeDownloads(c, cfg.DeviceID, cfg.MQTT.Topic.Download, cfg.DownloadDir)
+		if cfg.OCR.Enabled {
+			ocr.StartScheduler(c, cfg.OCR, cfg.DeviceID)
+			ocr.SubscribeCommands(c, cfg.OCR, cfg.DeviceID)
+		}
 		mcp.SubscribeCalls(c, cfg.DeviceID, cfg.MQTT.Topic.MCPCall, cfg.Inference.ServiceURL, cfg)
 	})
 	if tlsConfig != nil {

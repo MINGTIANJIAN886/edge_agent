@@ -17,6 +17,7 @@ type Config struct {
 	LogDir      string      `yaml:"log_dir"`
 	OTA         OTA         `yaml:"ota"`
 	Inference   Inference   `yaml:"inference"`
+	OCR         OCR         `yaml:"ocr"`
 }
 
 type MQTT struct {
@@ -63,6 +64,15 @@ type OTA struct {
 	ModelDir            string `yaml:"model_dir"`             // base dir for versioned models
 	CurrentSymlink      string `yaml:"current_symlink"`       // symlink path for "current" model
 	BackupCount         int    `yaml:"backup_count"`          // number of old versions to keep
+}
+
+type OCR struct {
+	Enabled       bool    `yaml:"enabled"`
+	ScriptPath    string  `yaml:"script_path"`
+	Interval      int     `yaml:"interval"`
+	ConfThreshold float64 `yaml:"conf_threshold"`
+	CommandTopic  string  `yaml:"command_topic"`
+	ResultTopic   string  `yaml:"result_topic"`
 }
 
 type Inference struct {

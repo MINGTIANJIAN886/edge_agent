@@ -405,26 +405,139 @@ flowchart LR
 
 ### 部署
 
+#### 1. 安装 Python 依赖
+
+在边缘设备上安装 PaddleOCR 所需依赖：
+
 ```bash
-# 1. 在设备上安装 Python 依赖
-pip install paddlepaddle paddleocr opencv-python
+# 方式 A：使用虚拟环境（推荐）
+sudo python3 -m venv /opt/agent/ocr_env
+sudo /opt/agent/ocr_env/bin/pip install paddlepaddle paddleocr opencv-python
 
-# 2. 上传 OCR 推理脚本
-scp edge_ocr.py pi@192.168.x.x:/opt/agent/
+# 方式 B：直接安装到系统
+sudo pip3 install paddlepaddle paddleocr opencv-python
+```
 
-# 3. 配置 config.yaml 启用 OCR
-#    ocr:
-#      enabled: true
-#      script_path: "/opt/agent/edge_ocr.py"
-#      interval: 30            # 自动触发间隔（秒），0=关闭定时
-#      conf_threshold: 0.5
-#      command_topic: "edge/pi-001/ocr/command"
-#      result_topic: "edge/pi-001/ocr/result"
+> 树莓派等 ARM 设备上 pip 安装可能耗时较长（需编译依赖），可提前安装系统包加速：
+> ```bash
+> sudo apt update && sudo apt install -y libhdf5-dev libatlas-base-dev
+> ```
 
-# 4. 重新编译部署 Agent
-make build-aarch64
-scp build/agent-aarch64 pi@192.168.x.x:/usr/local/bin/agent
-ssh pi@192.168.x.x "sudo systemctl restart agent"
+#### 2. 上传 OCR 推理脚本
+
+```bash
+# 在边缘设备上执行
+sudo mkdir -p /opt/agent
+sudo curl -fsSL https://raw.githubusercontent.com/MINGTIANJIAN886/edge_agent/main/edge_ocr.py \
+  -o /opt/agent/edge_ocr.py
+
+# 如果使用虚拟环境（步骤 1 方式 A），设置脚本解释器
+sudo sed -i '1i#!/opt/agent/ocr_env/bin/python3' /opt/agent/edge_ocr.py
+sudo chmod +x /opt/agent/edge_ocr.py
+
+# 验证脚本可执行
+python3 /opt/agent/edge_ocr.py --conf 0.5
+# 预期输出（无摄像头时可能报错）：{"success": false, "error": "camera failed"}
+```
+
+#### 3. 修改 Agent 配置
+
+编辑设备上的 `/etc/agent/config.yaml`，在 `inference:` 与 `auth:` 之间添加 ocr 段：
+
+```bash
+sudo vim /etc/agent/config.yaml
+```
+
+```yaml
+# 原有配置保持不变，添加以下内容：
+
+ocr:
+  enabled: true
+  script_path: "/opt/agent/edge_ocr.py"
+  interval: 30            # 自动触发间隔（秒），0=关闭定时
+  conf_threshold: 0.5
+  command_topic: "edge/pi-001/ocr/command"
+  result_topic: "edge/pi-001/ocr/result"
+
+# 后续配置（auth: 等）保持不变
+```
+
+也可以使用一键安装的环境变量覆盖：
+
+```bash
+OCR_ENABLED=true OCR_INTERVAL=60 OCR_CONF_THRESHOLD=0.6 \
+  sudo curl -fsSL https://raw.githubusercontent.com/MINGTIANJIAN886/edge_agent/main/agent.sh | sudo bash
+```
+
+#### 4. 重新编译 Agent
+
+在开发机上编译（如需最新 OCR 代码）：
+
+```bash
+git clone https://github.com/MINGTIANJIAN886/edge_agent.git
+cd edge_agent
+
+# 安装 Go 依赖
+make deps
+
+# 编译目标平台
+make build-aarch64      # 树莓派 64 位
+# make build-armv7l     # 树莓派 32 位 (Zero/3B)
+# make build-amd64      # x86 设备
+
+# 编译产物在 build/ 目录
+ls -lh build/
+```
+
+#### 5. 部署到设备
+
+```bash
+# 传输二进制和推理脚本
+scp build/agent-aarch64 pi@192.168.1.100:/tmp/agent-new
+scp edge_ocr.py pi@192.168.1.100:/tmp/
+
+# 通过 SSH 安装并重启
+ssh pi@192.168.1.100 "
+  sudo mv /tmp/agent-new /usr/local/bin/agent &&
+  sudo mkdir -p /opt/agent &&
+  sudo mv /tmp/edge_ocr.py /opt/agent/ &&
+  sudo chmod +x /opt/agent/edge_ocr.py &&
+  sudo systemctl restart agent
+"
+```
+
+> 如果使用预编译二进制（跳过步骤 4），可直接下载：
+> ```bash
+> ssh pi@192.168.1.100 "
+>   sudo curl -fsSL https://github.com/MINGTIANJIAN886/edge_agent/releases/latest/download/agent-aarch64 \
+>     -o /usr/local/bin/agent &&
+>   sudo chmod +x /usr/local/bin/agent &&
+>   sudo systemctl restart agent
+> "
+> ```
+
+#### 6. 验证 OCR 是否正常运行
+
+```bash
+# 查看 agent 日志，确认 OCR 启动
+ssh pi@192.168.1.100 "sudo journalctl -u agent -f --since '5 min ago'"
+
+# 应看到类似输出：
+# OCR scheduler started: interval=30s, result_topic=edge/pi-001/ocr/result
+# OCR subscribed to command topic: edge/pi-001/ocr/command
+
+# 手动触发一次 OCR 测试（发布空消息）
+mosquitto_pub -h "ca15b49bc8b442638f0cade1e45585ce.s1.eu.hivemq.cloud" \
+  -p 8883 --cafile /etc/ssl/certs/ca-certificates.crt \
+  -u "liyankun" -P "liyankun152455A" \
+  -t "edge/pi-001/ocr/command" \
+  -m '{}'
+
+# 查看识别结果
+mosquitto_sub -h "ca15b49bc8b442638f0cade1e45585ce.s1.eu.hivemq.cloud" \
+  -p 8883 --cafile /etc/ssl/certs/ca-certificates.crt \
+  -u "liyankun" -P "liyankun152455A" \
+  -t "edge/pi-001/ocr/result" -v
 ```
 
 ### 使用方式
@@ -520,6 +633,8 @@ auth:
 │   ├── enroll/enroll.go           # 证书自动签发
 │   ├── heartbeat/heartbeat.go     # 心跳上报
 │   ├── mcp/mcp.go                 # MCP 工具注册 & 调度
+│   ├── ocr/ocr.go                 # OCR 执行（调用 python3 edge_ocr.py）
+│   ├── ocr/handler.go             # OCR 定时调度 & MQTT 订阅
 │   ├── ota/ota.go                 # OTA 更新 & 回滚
 │   └── remote/remote.go           # 远程命令执行
 ├── build/                         # 预编译二进制
@@ -528,6 +643,8 @@ auth:
 │   └── agent-armv7l
 ├── models/                        # YOLO NCNN 模型
 ├── car_bridge.py                  # ROS2 MQTT 桥接脚本
+├── edge_ocr.py                    # PaddleOCR 推理脚本（部署到 /opt/agent/）
+├── requirements-ocr.txt           # OCR Python 依赖
 ├── agent.sh                       # 一键安装脚本
 ├── Makefile                       # 编译 & 发布
 ├── go.mod / go.sum                # Go 依赖
