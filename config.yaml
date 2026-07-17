@@ -1,0 +1,41 @@
+device_id: "${DEVICE_ID}"
+download_dir: "/tmp/agent/downloads"
+heartbeat_interval: 30
+log_dir: "/var/log/agent"
+
+mqtt:
+  broker: "${MQTT_BROKER}"
+  port: 8883
+  client_id: "agent-${DEVICE_ID}"
+  username: "${MQTT_USER}"
+  password: "${MQTT_PASS}"
+  topic:
+    command: "edge/${DEVICE_ID}/command"
+    download: "edge/${DEVICE_ID}/download"
+    heartbeat: "edge/${DEVICE_ID}/heartbeat"
+    result: "edge/${DEVICE_ID}/result"
+    register: "edge/${DEVICE_ID}/register"
+    mcp_register: "edge/${DEVICE_ID}/mcp/register"
+    mcp_call: "edge/${DEVICE_ID}/mcp/call"
+
+cert_api: "${CERT_API_URL}"
+
+cert:
+  cert_file: "/etc/agent/certs/device.crt"
+  key_file: "/etc/agent/certs/device.key"
+  ca_file: "/etc/agent/certs/ca.crt"
+  auto_enroll: ${AUTO_ENROLL:-true}
+  token: "${CERT_TOKEN}"
+
+ocr:
+  enabled: ${OCR_ENABLED:-false}
+  script_path: "${OCR_SCRIPT_PATH:-/opt/agent/edge_ocr.py}"
+  interval: ${OCR_INTERVAL:-30}
+  conf_threshold: ${OCR_CONF_THRESHOLD:-0.5}
+  command_topic: "edge/${DEVICE_ID}/ocr/command"
+  result_topic: "edge/${DEVICE_ID}/ocr/result"
+
+auth:
+  method: "${AUTH_METHOD:-cert}"
+  token: "${AUTH_TOKEN}"
+  token_exchange: ${TOKEN_EXCHANGE:-true}

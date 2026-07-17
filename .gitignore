@@ -1,0 +1,5 @@
+build/
+agent-aarch64
+agent-amd64
+agent-armv7l
+*.trash*
