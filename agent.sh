@@ -1,0 +1,289 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ============================================================
+#  Edge Agent 一键安装脚本
+#  用法:
+#    curl -fsSL https://raw.githubusercontent.com/MINGTIANJIAN886/edge_agent/main/agent.sh | sudo bash
+#    curl -fsSL https://raw.githubusercontent.com/MINGTIANJIAN886/edge_agent/main/agent.sh | sudo bash -s -- --bridge
+# ============================================================
+
+INSTALL_DIR="/usr/local/bin"
+CONFIG_DIR="/etc/agent"
+LOG_DIR="/var/log/agent"
+DOWNLOAD_DIR="/tmp/agent/downloads"
+SERVICE_DIR="/etc/systemd/system"
+
+AGENT_BIN="${INSTALL_DIR}/agent"
+CONFIG_FILE="${CONFIG_DIR}/config.yaml"
+SERVICE_FILE="${SERVICE_DIR}/agent.service"
+BRIDGE_SCRIPT="/home/liyankun/Desktop/car_bridge.py"
+BRIDGE_SERVICE_FILE="${SERVICE_DIR}/car_bridge.service"
+
+ARCH=$(uname -m)
+case "$ARCH" in
+    x86_64|amd64)  BINARY="agent-amd64" ;;
+    aarch64|arm64) BINARY="agent-aarch64" ;;
+    armv7l|armhf)  BINARY="agent-armv7l" ;;
+    *) echo "Unsupported architecture: $ARCH"; exit 1 ;;
+esac
+
+# 默认参数（可通过环境变量覆盖）
+DEVICE_ID="${DEVICE_ID:-pi-001}"
+MQTT_BROKER="${MQTT_BROKER:-ca15b49bc8b442638f0cade1e45585ce.s1.eu.hivemq.cloud}"
+MQTT_PORT="${MQTT_PORT:-8883}"
+MQTT_USER="${MQTT_USER:-liyankun}"
+MQTT_PASS="${MQTT_PASS:-liyankun152455A}"
+OTA_SERVER="${OTA_SERVER:-https://amplifier-badge-awoke.ngrok-free.dev}"
+INSTALL_BRIDGE=false
+
+for arg in "$@"; do
+  case "$arg" in
+    --bridge) INSTALL_BRIDGE=true ;;
+    --help) echo "Usage: $0 [--bridge] [DEVICE_ID]"; exit 0 ;;
+  esac
+done
+
+if [ $# -gt 0 ] && [[ "$1" != --* ]]; then
+  DEVICE_ID="$1"
+fi
+
+echo "=== Edge Agent Installer ==="
+echo "Device: ${DEVICE_ID} | Arch: ${ARCH}"
+echo "Broker: ${MQTT_BROKER}:${MQTT_PORT}"
+echo "OTA:    ${OTA_SERVER}"
+echo "Bridge: ${INSTALL_BRIDGE}"
+echo ""
+
+# [1/5] 创建目录
+echo "[1/5] Creating directories..."
+mkdir -p "${INSTALL_DIR}" "${CONFIG_DIR}" "${LOG_DIR}" "${DOWNLOAD_DIR}"
+
+# [2/5] 下载并解压
+if [ ! -f "${AGENT_BIN}" ]; then
+  echo "[2/5] Downloading agent..."
+  TMPDIR=$(mktemp -d)
+  trap "rm -rf ${TMPDIR}" EXIT
+  cd "${TMPDIR}"
+  curl -fsSL --connect-timeout 30 --max-time 600 -o repo.tar.gz \
+    "https://codeload.github.com/MINGTIANJIAN886/edge_agent/tar.gz/main"
+  tar -xzf repo.tar.gz
+  tar -xzf edge_agent-main/agent.tar.gz 2>/dev/null || true
+
+  if [ -f "agent/build/${BINARY}" ]; then
+    cp "agent/build/${BINARY}" "${AGENT_BIN}"
+  elif [ -f "edge_agent-main/build/${BINARY}" ]; then
+    cp "edge_agent-main/build/${BINARY}" "${AGENT_BIN}"
+  else
+    echo "WARNING: Pre-built binary not found, skipping agent download"
+    echo "Build manually: cd edge_agent && make build-aarch64"
+  fi
+  chmod +x "${AGENT_BIN}" 2>/dev/null || true
+else
+  echo "[2/5] Agent already installed at ${AGENT_BIN}"
+fi
+
+# [3/5] 生成配置
+echo "[3/5] Generating configuration..."
+cat > "${CONFIG_FILE}" << EOF
+device_id: "${DEVICE_ID}"
+download_dir: "${DOWNLOAD_DIR}"
+heartbeat_interval: 30
+log_dir: "${LOG_DIR}"
+
+mqtt:
+  broker: "${MQTT_BROKER}"
+  port: ${MQTT_PORT}
+  client_id: "agent-${DEVICE_ID}"
+  username: "${MQTT_USER}"
+  password: "${MQTT_PASS}"
+  topic:
+    command: "edge/${DEVICE_ID}/command"
+    download: "edge/${DEVICE_ID}/download"
+    heartbeat: "edge/${DEVICE_ID}/heartbeat"
+    result: "edge/${DEVICE_ID}/result"
+    register: "edge/${DEVICE_ID}/register"
+    mcp_register: "edge/${DEVICE_ID}/mcp/register"
+    mcp_call: "edge/${DEVICE_ID}/mcp/call"
+
+ota:
+  server_url: "${OTA_SERVER}"
+  version_path: "version.json"
+  check_interval: 300
+  current_version: "5.0"
+  model_file: "/home/liyankun/models/model.ncnn.bin"
+  model_dir: "/home/liyankun/models"
+  current_symlink: "/home/liyankun/models/current"
+  backup_count: 3
+  inference_restart_cmd: ""
+
+cert_api: ""
+cert:
+  cert_file: ""
+  key_file: ""
+  ca_file: "/etc/ssl/certs/ca-certificates.crt"
+  auto_enroll: false
+  token: ""
+
+auth:
+  method: "password"
+  token: ""
+  token_exchange: false
+EOF
+echo "  -> ${CONFIG_FILE}"
+
+# [4/5] 安装 systemd 服务
+echo "[4/5] Installing systemd service..."
+cat > "${SERVICE_FILE}" << EOF
+[Unit]
+Description=Edge Agent - ${DEVICE_ID}
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=${AGENT_BIN} -config ${CONFIG_FILE}
+Restart=always
+RestartSec=3
+RestartMaxDelaySec=15
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+if command -v systemctl &>/dev/null; then
+    systemctl daemon-reload
+    systemctl enable agent
+    systemctl restart agent
+    echo "  -> systemd service installed and started"
+else
+    nohup "${AGENT_BIN}" -config "${CONFIG_FILE}" > "${LOG_DIR}/agent.log" 2>&1 &
+    echo "  -> PID: $!"
+fi
+
+# [5/5] 可选：安装 ROS2 Car Bridge
+if [ "${INSTALL_BRIDGE}" = true ]; then
+  echo "[5/5] Installing ROS2 Car Bridge..."
+  pip install paho-mqtt 2>/dev/null || pip3 install paho-mqtt 2>/dev/null || true
+
+  # 下载桥接脚本
+  mkdir -p "$(dirname "${BRIDGE_SCRIPT}")"
+  curl -fsSL -o "${BRIDGE_SCRIPT}" \
+    "https://raw.githubusercontent.com/MINGTIANJIAN886/edge_agent/main/car_bridge.py" 2>/dev/null || {
+    cat > "${BRIDGE_SCRIPT}" << 'PYEOF'
+import rclpy
+from rclpy.node import Node
+from geometry_msgs.msg import Twist
+import paho.mqtt.client as mqtt
+import json, os, signal, threading
+
+BROKER = "ca15b49bc8b442638f0cade1e45585ce.s1.eu.hivemq.cloud"
+PORT = 8883; CAFILE = "/etc/ssl/certs/ca-certificates.crt"
+USER = "liyankun"; PASS = "liyankun152455A"
+TOPIC = "edge/pi-001/car/command"
+RTOP = "edge/pi-001/car/result"
+DIR_MAP = {"forward":(1,0),"backward":(-1,0),"left":(0,1),"right":(0,-1),"stop":(0,0),"rotate_l":(0,1),"rotate_r":(0,-1)}
+
+class Bridge(Node):
+    def __init__(self):
+        super().__init__("car_bridge")
+        self.pub = self.create_publisher(Twist, "/cmd_vel", 10)
+        self.timer = None; self.ml=1.0; self.ma=2.0
+        self.mc = mqtt.Client()
+        if os.path.exists(CAFILE): self.mc.tls_set(CAFILE)
+        self.mc.username_pw_set(USER, PASS)
+        self.mc.on_connect = lambda c,*_: (c.subscribe(TOPIC), self.get_logger().info("MQTT ok"))
+        self.mc.on_message = self._on_msg
+        self.mc.connect_async(BROKER, PORT, 60)
+        self.mc.loop_start()
+        signal.signal(signal.SIGINT, lambda *_: self.stop() or self.mc.loop_stop())
+
+    def stop(self):
+        self._pub(0,0)
+        if self.timer: self.timer.cancel(); self.timer=None
+
+    def _pub(self,lx,az):
+        t=Twist(); t.linear.x=lx; t.angular.z=az; self.pub.publish(t)
+
+    def _rst(self,ok,msg):
+        self.mc.publish(RTOP,json.dumps({"success":ok,"message":msg}))
+
+    def _on_msg(self,_,__,msg):
+        try:
+            d=json.loads(msg.payload)
+            dr=d.get("direction",""); s=float(d.get("speed",0.2))
+            lx=d.get("linear_x"); az=d.get("angular_z")
+            dm=d.get("duration_ms",0)
+            if dr=="stop": self.stop(); self._rst(1,"stopped"); return
+            if lx is not None and az is not None:
+                self._pub(float(lx)*self.ml,float(az)*self.ma)
+                if dm>0: self._sched(dm)
+                self._rst(1,f"vel lx={lx} az={az}"); return
+            if dr in DIR_MAP:
+                lx,az=DIR_MAP[dr]
+                if dr in ("rotate_l","rotate_r"): lx=0; az*=s*self.ma
+                else: lx*=s*self.ml; az*=s*self.ma
+                self._pub(lx,az)
+            elif dr=="curve":
+                lx=float(d.get("linear",s))*self.ml
+                az=float(d.get("angular",s*0.5))*self.ma
+                self._pub(lx,az)
+            else: self._rst(0,f"unknown {dr}"); return
+            if dm>0: self._sched(dm)
+            self._rst(1,f"{dr} s={s}")
+        except Exception as e: self._rst(0,str(e))
+
+    def _sched(self,ms):
+        if self.timer: self.timer.cancel()
+        self.timer=threading.Timer(ms/1000,self.stop); self.timer.daemon=True; self.timer.start()
+
+def main():
+    rclpy.init(); n=Bridge()
+    try: rclpy.spin(n)
+    finally: n.stop(); n.mc.loop_stop(); n.mc.disconnect(); n.destroy_node(); rclpy.shutdown()
+if __name__=="__main__": main()
+PYEOF
+  }
+  chmod +x "${BRIDGE_SCRIPT}"
+
+  cat > "${BRIDGE_SERVICE_FILE}" << EOF
+[Unit]
+Description=ROS2 Car Bridge (MQTT -> /cmd_vel)
+After=network.target agent.service
+
+[Service]
+Type=simple
+User=liyankun
+ExecStart=/bin/bash -c "VER=$(ls /opt/ros/ 2>/dev/null | head -1); source /opt/ros/$VER/setup.bash 2>/dev/null; exec python3 ${BRIDGE_SCRIPT}"
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  if command -v systemctl &>/dev/null; then
+    systemctl daemon-reload
+    systemctl enable car_bridge
+    systemctl restart car_bridge 2>/dev/null || true
+    echo "  -> car_bridge service installed"
+  fi
+fi
+
+echo ""
+echo "=== Install Complete ==="
+echo "Binary: ${AGENT_BIN}"
+echo "Config: ${CONFIG_FILE}"
+echo "Logs:   journalctl -u agent -f"
+echo ""
+echo "Commands:"
+echo "  sudo systemctl status agent"
+echo "  journalctl -u agent -f"
+if [ "${INSTALL_BRIDGE}" = true ]; then
+  echo "  sudo systemctl status car_bridge"
+fi
+echo ""
+echo "To trigger OTA update:"
+echo "  mosquitto_pub ... -t edge/${DEVICE_ID}/mcp/call -m '{\"id\":\"o\",\"method\":\"check_update\",\"params\":{}}'"

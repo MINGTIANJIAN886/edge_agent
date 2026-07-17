@@ -1,0 +1,39 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goarch: amd64
+            goarm: ""
+            suffix: amd64
+          - goarch: arm64
+            goarm: ""
+            suffix: aarch64
+          - goarch: arm
+            goarm: "7"
+            suffix: armv7l
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Build agent-${{ matrix.suffix }}
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.goarch }} GOARM=${{ matrix.goarm }} \
+            go build -ldflags="-s -w" -o build/agent-${{ matrix.suffix }} ./cmd/agent
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-${{ matrix.suffix }}
+          path: build/agent-${{ matrix.suffix }}
