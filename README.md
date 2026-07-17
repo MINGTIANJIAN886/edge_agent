@@ -528,8 +528,6 @@ auth:
 │   └── agent-armv7l
 ├── models/                        # YOLO NCNN 模型
 ├── car_bridge.py                  # ROS2 MQTT 桥接脚本
-├── edge_ocr.py                    # PaddleOCR 推理脚本（部署在 /opt/agent/）
-├── requirements-ocr.txt           # OCR Python 依赖
 ├── agent.sh                       # 一键安装脚本
 ├── Makefile                       # 编译 & 发布
 ├── go.mod / go.sum                # Go 依赖
