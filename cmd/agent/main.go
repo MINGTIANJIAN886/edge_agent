@@ -3,18 +3,20 @@ package main
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
-	"github.com/user/agent/internal/config"
 	"github.com/user/agent/internal/bridge"
+	"github.com/user/agent/internal/config"
 	"github.com/user/agent/internal/download"
 	"github.com/user/agent/internal/enroll"
 	"github.com/user/agent/internal/heartbeat"
@@ -22,6 +24,7 @@ import (
 	"github.com/user/agent/internal/ocr"
 	"github.com/user/agent/internal/ota"
 	"github.com/user/agent/internal/remote"
+	"github.com/user/agent/internal/ros"
 )
 
 func main() {
@@ -105,9 +108,12 @@ func main() {
 	opts.SetReconnectingHandler(func(_ mqtt.Client, _ *mqtt.ClientOptions) {
 		log.Println("MQTT reconnecting...")
 	})
+	rosVer := ros.Detect()
+	log.Printf("ROS version: %s", rosVer)
+
 	opts.SetOnConnectHandler(func(c mqtt.Client) {
 		log.Println("MQTT connected")
-		mcp.PublishTools(c, cfg.DeviceID, cfg.MQTT.Topic.MCPRegister)
+		mcp.PublishTools(c, cfg.DeviceID, cfg.MQTT.Topic.MCPRegister, rosVer)
 		remote.SubscribeCommands(c, cfg.DeviceID, cfg.MQTT.Topic.Command)
 		download.SubscribeDownloads(c, cfg.DeviceID, cfg.MQTT.Topic.Download, cfg.DownloadDir)
 		if cfg.OCR.Enabled {
@@ -143,18 +149,125 @@ func main() {
 	go ota.StartPeriodicCheck(cfg.OTA, client, cfg.DeviceID, cfg.MQTT.Topic.Result)
 	go mqttWatchdog(client)
 
-	bm := bridge.NewManager("/home/liyankun/Desktop/car_bridge.py")
-	if err := bm.Start(); err != nil {
-		log.Printf("car bridge: %v (skip)", err)
-	} else {
-		defer bm.Stop()
+	var bridgeMgr *bridge.Manager
+	if cfg.ROS.Enabled && rosVer != ros.None {
+		bridgeCfg := bridge.Config{
+			Enabled:         cfg.ROS.Enabled,
+			ScriptROS1:      cfg.ROS.BridgeScript1,
+			ScriptROS2:      cfg.ROS.BridgeScript2,
+			PythonBin:       cfg.ROS.PythonBin,
+			MaxLinearSpeed:  cfg.ROS.MaxLinearSpeed,
+			MaxAngularSpeed: cfg.ROS.MaxAngularSpeed,
+			WatchdogTimeout: cfg.ROS.SafetyWatchdog,
+			CmdVelTopic:     cfg.ROS.CmdVelTopic,
+			ResultTopic:     cfg.ROS.BridgeResultTopic,
+		}
+		bridgeMgr = bridge.New(rosVer, bridgeCfg, cfg.DeviceID, client)
+		subscribeBridgeCommands(client, cfg.DeviceID, cfg.MQTT.Topic, bridgeMgr, rosVer)
+		log.Println("ROS bridge manager initialized")
 	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-sigCh
 	log.Printf("received signal %v, shutting down", sig)
+
+	if bridgeMgr != nil {
+		bridgeMgr.Stop()
+	}
 	client.Disconnect(1000)
+}
+
+func subscribeBridgeCommands(client mqtt.Client, deviceID string, topics config.Topic, mgr *bridge.Manager, ver ros.Version) {
+	cmdVelTopic := strings.Replace(topics.Command, "/command", "/car/cmd_vel", 1)
+	svcCallTopic := strings.Replace(topics.Command, "/command", "/car/service_call", 1)
+	paramTopic := strings.Replace(topics.Command, "/command", "/car/param", 1)
+	emergencyTopic := strings.Replace(topics.Command, "/command", "/car/emergency_stop", 1)
+	ctrlTopic := strings.Replace(topics.Command, "/command", "/bridge/control", 1)
+
+	msgType := map[ros.Version]string{
+		ros.ROS1: "geometry_msgs/Twist",
+		ros.ROS2: "geometry_msgs/msg/Twist",
+	}[ver]
+
+	if token := client.Subscribe(cmdVelTopic, 1, func(_ mqtt.Client, msg mqtt.Message) {
+		var req struct {
+			LinearX  float64 `json:"linear_x"`
+			AngularZ float64 `json:"angular_z"`
+		}
+		if err := json.Unmarshal(msg.Payload(), &req); err != nil {
+			log.Printf("cmd_vel parse error: %v", err)
+			return
+		}
+		data, _ := json.Marshal(map[string]interface{}{
+			"linear":  map[string]float64{"x": req.LinearX, "y": 0, "z": 0},
+			"angular": map[string]float64{"x": 0, "y": 0, "z": req.AngularZ},
+		})
+		mgr.Send(ros.BridgeInput{
+			Cmd:     "publish",
+			Topic:   "/cmd_vel",
+			MsgType: msgType,
+			Data:    data,
+		})
+	}); token.WaitTimeout(5*time.Second) && token.Error() != nil {
+		log.Printf("subscribe cmd_vel error: %v", token.Error())
+	}
+
+	if token := client.Subscribe(svcCallTopic, 1, func(_ mqtt.Client, msg mqtt.Message) {
+		var req ros.BridgeInput
+		if err := json.Unmarshal(msg.Payload(), &req); err != nil {
+			log.Printf("service_call parse error: %v", err)
+			return
+		}
+		mgr.Send(req)
+	}); token.WaitTimeout(5*time.Second) && token.Error() != nil {
+		log.Printf("subscribe service_call error: %v", token.Error())
+	}
+
+	if token := client.Subscribe(paramTopic, 1, func(_ mqtt.Client, msg mqtt.Message) {
+		var req ros.BridgeInput
+		if err := json.Unmarshal(msg.Payload(), &req); err != nil {
+			log.Printf("param parse error: %v", err)
+			return
+		}
+		mgr.Send(req)
+	}); token.WaitTimeout(5*time.Second) && token.Error() != nil {
+		log.Printf("subscribe param error: %v", token.Error())
+	}
+
+	if token := client.Subscribe(emergencyTopic, 1, func(_ mqtt.Client, msg mqtt.Message) {
+		data, _ := json.Marshal(map[string]interface{}{
+			"linear":  map[string]float64{"x": 0, "y": 0, "z": 0},
+			"angular": map[string]float64{"x": 0, "y": 0, "z": 0},
+		})
+		mgr.Send(ros.BridgeInput{Cmd: "publish", Topic: "/cmd_vel", MsgType: msgType, Data: data})
+	}); token.WaitTimeout(5*time.Second) && token.Error() != nil {
+		log.Printf("subscribe emergency_stop error: %v", token.Error())
+	}
+
+	if token := client.Subscribe(ctrlTopic, 1, func(_ mqtt.Client, msg mqtt.Message) {
+		var ctrl struct{ Cmd string `json:"cmd"` }
+		if err := json.Unmarshal(msg.Payload(), &ctrl); err != nil {
+			log.Printf("bridge control parse error: %v", err)
+			return
+		}
+		switch ctrl.Cmd {
+		case "start":
+			if err := mgr.Start(); err != nil {
+				log.Printf("bridge start error: %v", err)
+			}
+		case "stop":
+			mgr.Stop()
+		case "restart":
+			mgr.Stop()
+			time.Sleep(time.Second)
+			if err := mgr.Start(); err != nil {
+				log.Printf("bridge restart error: %v", err)
+			}
+		}
+	}); token.WaitTimeout(5*time.Second) && token.Error() != nil {
+		log.Printf("subscribe bridge control error: %v", token.Error())
+	}
 }
 
 func mqttWatchdog(client mqtt.Client) {

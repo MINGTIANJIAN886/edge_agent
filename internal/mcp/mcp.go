@@ -18,6 +18,7 @@ import (
 	"github.com/user/agent/internal/config"
 	"github.com/user/agent/internal/ocr"
 	"github.com/user/agent/internal/ota"
+	"github.com/user/agent/internal/ros"
 )
 
 type RegisterRequest struct {
@@ -108,7 +109,7 @@ func Register(apiURL, deviceID, hostname string) error {
 	return nil
 }
 
-func PublishTools(client mqtt.Client, deviceID, topic string) {
+func PublishTools(client mqtt.Client, deviceID, topic string, rosVer ros.Version) {
 	tools := []ToolDefinition{
 		{
 			Name:        "device_info",
@@ -202,6 +203,99 @@ func PublishTools(client mqtt.Client, deviceID, topic string) {
 				Properties: map[string]SchemaProperty{},
 			},
 		},
+	}
+
+	if rosVer == ros.ROS1 || rosVer == ros.ROS2 {
+		rosTools := []ToolDefinition{
+			{
+				Name: "ros_version", Description: "Detect ROS version installed on device",
+				InputSchema: InputSchema{Type: "object", Properties: map[string]SchemaProperty{}},
+			},
+			{
+				Name: "ros_node_list", Description: "List all ROS nodes",
+				InputSchema: InputSchema{Type: "object", Properties: map[string]SchemaProperty{}},
+			},
+			{
+				Name: "ros_topic_list", Description: "List all ROS topics with types",
+				InputSchema: InputSchema{Type: "object", Properties: map[string]SchemaProperty{}},
+			},
+			{
+				Name: "ros_service_list", Description: "List all ROS services with types",
+				InputSchema: InputSchema{Type: "object", Properties: map[string]SchemaProperty{}},
+			},
+			{
+				Name: "ros_topic_echo", Description: "Echo latest message from a ROS topic",
+				InputSchema: InputSchema{
+					Type: "object",
+					Properties: map[string]SchemaProperty{
+						"topic": {Type: "string", Description: "Topic name to echo"},
+					},
+					Required: []string{"topic"},
+				},
+			},
+			{
+				Name: "ros_service_call", Description: "Call a ROS service",
+				InputSchema: InputSchema{
+					Type: "object",
+					Properties: map[string]SchemaProperty{
+						"service":  {Type: "string", Description: "Service name"},
+						"msg_type": {Type: "string", Description: "Service type (e.g. std_srvs/srv/Empty)"},
+						"args":     {Type: "string", Description: "Arguments in YAML/JSON format"},
+					},
+					Required: []string{"service"},
+				},
+			},
+			{
+				Name: "ros_param_get", Description: "Get a ROS parameter value",
+				InputSchema: InputSchema{
+					Type: "object",
+					Properties: map[string]SchemaProperty{
+						"name": {Type: "string", Description: "Parameter name"},
+					},
+					Required: []string{"name"},
+				},
+			},
+			{
+				Name: "ros_param_set", Description: "Set a ROS parameter value",
+				InputSchema: InputSchema{
+					Type: "object",
+					Properties: map[string]SchemaProperty{
+						"name":  {Type: "string", Description: "Parameter name"},
+						"value": {Type: "string", Description: "Parameter value"},
+					},
+					Required: []string{"name", "value"},
+				},
+			},
+			{
+				Name: "bridge_start", Description: "Start the ROS-MQTT bridge node",
+				InputSchema: InputSchema{Type: "object", Properties: map[string]SchemaProperty{}},
+			},
+			{
+				Name: "bridge_stop", Description: "Stop the ROS-MQTT bridge node",
+				InputSchema: InputSchema{Type: "object", Properties: map[string]SchemaProperty{}},
+			},
+			{
+				Name: "bridge_status", Description: "Check if the ROS-MQTT bridge is running",
+				InputSchema: InputSchema{Type: "object", Properties: map[string]SchemaProperty{}},
+			},
+			{
+				Name: "car_cmd_vel", Description: "Send velocity command to robot car",
+				InputSchema: InputSchema{
+					Type: "object",
+					Properties: map[string]SchemaProperty{
+						"linear_x":  {Type: "number", Description: "Linear velocity in X (m/s)"},
+						"angular_z": {Type: "number", Description: "Angular velocity around Z (rad/s)"},
+						"duration":  {Type: "number", Description: "Duration in seconds (0=one-shot)"},
+					},
+					Required: []string{"linear_x", "angular_z"},
+				},
+			},
+			{
+				Name: "car_emergency_stop", Description: "Emergency stop - publish zero velocity",
+				InputSchema: InputSchema{Type: "object", Properties: map[string]SchemaProperty{}},
+			},
+		}
+		tools = append(tools, rosTools...)
 	}
 
 	msg := MCPRegisterMsg{

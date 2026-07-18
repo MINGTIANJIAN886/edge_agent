@@ -18,6 +18,7 @@ type Config struct {
 	OTA         OTA         `yaml:"ota"`
 	Inference   Inference   `yaml:"inference"`
 	OCR         OCR         `yaml:"ocr"`
+	ROS         ROSConfig   `yaml:"ros"`
 }
 
 type MQTT struct {
@@ -78,6 +79,18 @@ type OCR struct {
 type Inference struct {
 	ServiceURL string `yaml:"service_url"`
 	Timeout    int    `yaml:"timeout"`
+}
+
+type ROSConfig struct {
+	Enabled          bool    `yaml:"enabled"`
+	BridgeScript1    string  `yaml:"bridge_script_ros1"`
+	BridgeScript2    string  `yaml:"bridge_script_ros2"`
+	PythonBin        string  `yaml:"bridge_python"`
+	MaxLinearSpeed   float64 `yaml:"car_max_linear_speed"`
+	MaxAngularSpeed  float64 `yaml:"car_max_angular_speed"`
+	SafetyWatchdog   int     `yaml:"safety_watchdog_timeout"`
+	CmdVelTopic      string  `yaml:"cmd_vel_topic"`
+	BridgeResultTopic string `yaml:"bridge_result_topic"`
 }
 
 func Load(path string) (*Config, error) {
