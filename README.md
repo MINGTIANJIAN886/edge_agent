@@ -1,6 +1,6 @@
 # Edge Agent
 
-通用边缘设备管理 Agent，通过 MQTT 实现远程控制、文件下发、OTA 模型更新、ROS2 小车控制。支持任意 Linux 设备：树莓派、Jetson、x86 工控机、ARM 开发板等。
+通用边缘设备管理 Agent，通过 MQTT 实现远程控制、文件下发、OTA 模型更新、ROS1/ROS2 小车控制。支持任意 Linux 设备：树莓派、Jetson、x86 工控机、ARM 开发板等。
 
 ## 架构
 
@@ -16,7 +16,7 @@ flowchart TB
 
     subgraph Device["边缘设备"]
         YOLO["YOLO NCNN 推理"]
-        ROS["ROS2 Car Bridge"]
+        ROS["ROS1 / ROS2 Car Bridge"]
     end
 
     MQTT <-- MQTT 指令 / 结果 --> AGENT
@@ -35,7 +35,7 @@ flowchart TB
 | **OTA 更新** | 定时检查版本清单，自动下载、校验、切换模型 | `edge/{id}/mcp/call` |
 | **模型回滚** | 一键回滚到上一个模型版本 | `edge/{id}/mcp/call` |
 | **设备心跳** | 每 30s 上报设备状态（CPU、内存、运行时间） | `edge/{id}/heartbeat` |
-| **ROS2 桥接** | MQTT → ROS2 `/cmd_vel` 小车控制 | `edge/{id}/car/command` |
+| **ROS 桥接** | MQTT → ROS1/ROS2 小车控制（自动检测版本） | `edge/{id}/car/cmd_vel` |
 | **MCP 工具** | 通过 MCP 协议暴露 8+ 个设备管理工具 | `edge/{id}/mcp/register` |
 | **证书管理** | 支持自动证书签发（mTLS） | — |
 | **推理调用** | 调用 YOLO 推理服务进行目标检测 | — |
@@ -145,6 +145,25 @@ inference:
   service_url: "http://localhost:8080"
   timeout: 30
 
+ocr:
+  enabled: false
+  script_path: "/opt/agent/edge_ocr.py"
+  interval: 30
+  conf_threshold: 0.5
+  command_topic: "edge/pi-001/ocr/command"
+  result_topic: "edge/pi-001/ocr/result"
+
+ros:
+  enabled: false
+  bridge_script_ros1: "/opt/agent/bridge_ros1.py"
+  bridge_script_ros2: "/opt/agent/bridge_ros2.py"
+  bridge_python: "python3"
+  car_max_linear_speed: 2.0
+  car_max_angular_speed: 3.14
+  safety_watchdog_timeout: 5
+  cmd_vel_topic: "edge/pi-001/car/cmd_vel"
+  bridge_result_topic: "edge/pi-001/bridge/result"
+
 auth:
   method: "password"
   token: ""
@@ -165,6 +184,12 @@ cert:
 | `MQTT_USER` | `liyankun` | MQTT 用户名 |
 | `MQTT_PASS` | `liyankun152455A` | MQTT 密码 |
 | `OTA_SERVER` | `https://amplifier-badge-awoke.ngrok-free.dev` | OTA 更新服务器 |
+| `ROS_ENABLED` | `false` | 是否启用 ROS 桥接 |
+| `ROS_BRIDGE1` | `/opt/agent/bridge_ros1.py` | ROS1 桥接脚本路径 |
+| `ROS_BRIDGE2` | `/opt/agent/bridge_ros2.py` | ROS2 桥接脚本路径 |
+| `ROS_MAX_LINEAR` | `2.0` | 最大线速度限制 |
+| `ROS_MAX_ANGULAR` | `3.14` | 最大角速度限制 |
+| `ROS_WATCHDOG` | `5` | 安全看门狗超时（秒） |
 
 ```bash
 # 自定义 MQTT 和 OTA 服务器
@@ -324,69 +349,173 @@ ngrok http 8080
 # 外部设备通过 ngrok URL 即可访问文件
 ```
 
-## ROS2 Car Bridge
+## ROS1 / ROS2 小车控制
 
-将 MQTT 命令转为 ROS2 Twist 消息发布到 `/cmd_vel`，实现远程小车控制。Agent 自动检测 `/opt/ros/` 下安装的 ROS2 版本（humble / jazzy / rolling 等），无需手动指定。
+Agent 通过三层架构实现与任意 ROS 版本小车的通信：
+
+| 层级 | 方式 | 用途 | 延迟 |
+|------|------|------|------|
+| **Tier 1** CLI 发现层 | `ros2` / `rostopic` CLI | 节点/话题/服务发现、参数读写 | 50-200ms |
+| **Tier 2** Python 桥 | `bridge_ros1.py` / `bridge_ros2.py` | 实时双向转发（cmd_vel、odom、service） | 5-20ms |
+| **Tier 3** 原生 Go | rclgo（预留） | 高性能闭环控制 | 1-5ms |
+
+Agent **运行时自动检测 ROS 版本**（通过 `ROS_DISTRO` 环境变量或 CLI 工具是否存在），无需重新编译。
 
 ### 架构
 
 ```mermaid
 flowchart LR
-    A["手机 / PC<br/>MQTT 客户端"] -- "edge/{id}/car/command" --> B["car_bridge.py<br/>(Agent 子进程)"]
-    B -- "ROS2 Twist" --> C["/cmd_vel<br/>小车"]
+    subgraph Cloud["MQTT 云端"]
+        CMD["car/cmd_vel"]
+        CTRL["bridge/control"]
+        SVC["car/service_call"]
+        RES["bridge/result"]
+    end
+
+    subgraph Go["Edge Agent (Go)"]
+        DISCOVERY["发现层 (CLI)"]
+        BRIDGE_MGR["桥管理器"]
+        MCP["MCP 工具"]
+    end
+
+    subgraph Python["Python 桥进程"]
+        BRIDGE1["bridge_ros1.py"]
+        BRIDGE2["bridge_ros2.py"]
+    end
+
+    subgraph ROS["ROS 系统"]
+        CMD_VEL["/cmd_vel"]
+        ODOM["/odom"]
+        SRV["/services"]
+    end
+
+    CMD --> BRIDGE_MGR --> BRIDGE1 & BRIDGE2
+    CTRL --> BRIDGE_MGR
+    SVC --> BRIDGE_MGR
+    BRIDGE1 & BRIDGE2 --> CMD_VEL & SRV
+    ODOM --> BRIDGE1 & BRIDGE2 --> RES
+    DISCOVERY -.-> ROS
+    MCP -.-> DISCOVERY
 ```
 
 ### 部署
 
-Agent 启动时会自动检测 ROS2 版本并启动桥接：
+把桥接脚本放到设备上，配置好路径即可：
 
 ```bash
-# 一键安装时带上 --bridge
-curl -fsSL https://raw.githubusercontent.com/MINGTIANJIAN886/edge_agent/main/agent.sh | sudo bash -s -- --bridge
+# 部署桥接脚本
+sudo mkdir -p /opt/agent
+sudo curl -fsSL https://raw.githubusercontent.com/MINGTIANJIAN886/edge_agent/main/scripts/bridge_ros2.py \
+  -o /opt/agent/bridge_ros2.py
 
-# 或手动安装依赖
-pip install paho-mqtt
-
-# agent 会自动启动桥接，无需手动操作
+# 如果是 ROS1 设备
+sudo curl -fsSL https://raw.githubusercontent.com/MINGTIANJIAN886/edge_agent/main/scripts/bridge_ros1.py \
+  -o /opt/agent/bridge_ros1.py
 ```
 
-### 控制命令
+在 `/etc/agent/config.yaml` 中启用：
+
+```yaml
+ros:
+  enabled: true
+  bridge_script_ros1: "/opt/agent/bridge_ros1.py"
+  bridge_script_ros2: "/opt/agent/bridge_ros2.py"
+  bridge_python: "python3"
+  car_max_linear_speed: 2.0
+  car_max_angular_speed: 3.14
+  safety_watchdog_timeout: 5
+```
+
+### 控制桥接生命周期
 
 ```bash
-# 方向控制
-mosquitto_pub -h "ca15b49bc8b442638f0cade1e45585ce.s1.eu.hivemq.cloud" \
-  -p 8883 --cafile /etc/ssl/certs/ca-certificates.crt \
-  -u "liyankun" -P "liyankun152455A" \
-  -t "edge/pi-001/car/command" \
-  -m '{"direction":"forward","speed":0.2}'
+# 启动桥接
+mosquitto_pub ... -t "edge/pi-001/bridge/control" -m '{"cmd":"start"}'
 
-# 原地旋转
-mosquitto_pub ... -m '{"direction":"rotate_l","speed":0.3}'
-mosquitto_pub ... -m '{"direction":"rotate_r","speed":0.3}'
+# 查看状态
+mosquitto_pub ... -t "edge/pi-001/bridge/control" -m '{"cmd":"status"}'
 
-# 弧线运动（前进+转向的组合）
-mosquitto_pub ... -m '{"direction":"curve","linear":0.2,"angular":0.1}'
+# 停止桥接
+mosquitto_pub ... -t "edge/pi-001/bridge/control" -m '{"cmd":"stop"}'
 
-# 直接控制线速度和角速度（-1.0 ~ 1.0）
-mosquitto_pub ... -m '{"linear_x":0.5,"angular_z":0.3}'
+# 重启桥接
+mosquitto_pub ... -t "edge/pi-001/bridge/control" -m '{"cmd":"restart"}'
 
-# 带自动停止（运动持续毫秒后自动 stop）
-mosquitto_pub ... -m '{"direction":"forward","speed":0.3,"duration_ms":2000}'
+# 结果反馈在
+mosquitto_sub ... -t "edge/pi-001/bridge/result"
 ```
 
-支持的指令与参数：
+### 控制小车
 
-| 参数 | 类型 | 说明 | 默认值 |
-|------|------|------|--------|
-| `direction` | string | `forward` / `backward` / `left` / `right` / `stop` / `rotate_l` / `rotate_r` / `curve` | `stop` |
-| `speed` | float | 速度倍率 0.0 ~ 1.0 | `0.2` |
-| `linear_x` | float | 直接指定线速度（-1.0 ~ 1.0），替代 direction | — |
-| `angular_z` | float | 直接指定角速度（-1.0 ~ 1.0），替代 direction | — |
-| `linear` | float | curve 模式下的线速度 | `speed` |
-| `angular` | float | curve 模式下的角速度 | `speed * 0.5` |
-| `duration_ms` | int | 运动持续毫秒数，到期自动停止 | `0`（持续运动） |
+```bash
+# 前进 (线速度 0.5 m/s)
+mosquitto_pub ... -t "edge/pi-001/car/cmd_vel" \
+  -m '{"linear_x":0.5,"angular_z":0.0}'
 
-结果返回到 `edge/pi-001/car/result`。
+# 原地左转 (角速度 0.3 rad/s)
+mosquitto_pub ... -m '{"linear_x":0.0,"angular_z":0.3}'
+
+# 后退兼右转
+mosquitto_pub ... -m '{"linear_x":-0.3,"angular_z":-0.2}'
+
+# 急停
+mosquitto_pub ... -t "edge/pi-001/car/emergency_stop" -m '{}'
+```
+
+### 读取话题数据
+
+```bash
+# 让桥接订阅 /odom
+mosquitto_pub ... -t "edge/pi-001/car/param" \
+  -m '{"cmd":"subscribe","topic":"/odom","msg_type":"nav_msgs/msg/Odometry"}'
+
+# 监听结果（实时输出里程计数据）
+mosquitto_sub ... -t "edge/pi-001/bridge/result"
+
+# 取消订阅
+mosquitto_pub ... -t "edge/pi-001/car/param" \
+  -m '{"cmd":"unsubscribe","topic":"/odom"}'
+```
+
+### 调用 ROS 服务
+
+```bash
+# 调用 Empty 服务（如重置里程计）
+mosquitto_pub ... -t "edge/pi-001/car/service_call" \
+  -m '{"cmd":"service_call","service":"/reset_odometry","msg_type":"std_srvs/srv/Empty","data":{}}'
+
+# 调用 SetBool 服务（如使能电机）
+mosquitto_pub ... \
+  -m '{"cmd":"service_call","service":"/enable_motors","msg_type":"std_srvs/srv/SetBool","data":{"data":true}}'
+```
+
+### ROS1 格式差异
+
+如果设备是 ROS1，只需把 `msg_type` 改为 ROS1 格式：
+
+```bash
+# ROS2: geometry_msgs/msg/Twist
+# ROS1: geometry_msgs/Twist
+
+# ROS2: std_srvs/srv/Empty
+# ROS1: std_srvs/Empty
+```
+
+### 发现操作（无需启动桥接）
+
+Agent 内置 CLI 发现层，即使不启动桥接也能使用：
+
+```bash
+# 通过 MCP 调用
+mosquitto_pub ... -t "edge/pi-001/mcp/call" \
+  -m '{"id":"r1","method":"ros_topic_list","params":{}}'
+
+mosquitto_pub ... -t "edge/pi-001/mcp/call" \
+  -m '{"id":"r2","method":"ros_node_list","params":{}}'
+
+mosquitto_pub ... -t "edge/pi-001/mcp/call" \
+  -m '{"id":"r3","method":"ros_service_list","params":{}}'
+```
 
 ## OCR 文字识别
 
@@ -620,6 +749,19 @@ agent 启动时自动向 MQTT 注册以下 MCP 工具：
 | `check_update` | 检查 OTA 模型更新 |
 | `rollback_model` | 回滚模型版本 |
 | `run_ocr` | 触发一次 OCR 文字识别，返回识别结果 |
+| `ros_version` | 检测 ROS 版本（仅检测到 ROS 时注册） |
+| `ros_node_list` | 列出所有 ROS 节点 |
+| `ros_topic_list` | 列出所有 ROS 话题及类型 |
+| `ros_service_list` | 列出所有 ROS 服务及类型 |
+| `ros_topic_echo` | 订阅话题并返回最新消息 |
+| `ros_service_call` | 调用 ROS 服务 |
+| `ros_param_get` | 获取 ROS 参数 |
+| `ros_param_set` | 设置 ROS 参数 |
+| `bridge_start` | 启动 ROS-MQTT 桥接进程 |
+| `bridge_stop` | 停止桥接进程 |
+| `bridge_status` | 检查桥接是否运行 |
+| `car_cmd_vel` | 发送速度指令到小车 |
+| `car_emergency_stop` | 急停（发布零速度） |
 
 ### 证书管理
 
@@ -645,7 +787,7 @@ auth:
 ```
 ├── cmd/agent/main.go              # Agent 入口
 ├── internal/
-│   ├── bridge/bridge.go           # ROS2 版本检测 & 桥接管理
+│   ├── bridge/bridge.go           # ROS 桥管理器（进程生命周期）
 │   ├── config/config.go           # YAML 配置解析
 │   ├── download/download.go       # 文件下载模块
 │   ├── enroll/enroll.go           # 证书自动签发
@@ -654,13 +796,20 @@ auth:
 │   ├── ocr/ocr.go                 # OCR 执行（调用 python3 edge_ocr.py）
 │   ├── ocr/handler.go             # OCR 定时调度 & MQTT 订阅
 │   ├── ota/ota.go                 # OTA 更新 & 回滚
-│   └── remote/remote.go           # 远程命令执行
+│   ├── remote/remote.go           # 远程命令执行
+│   └── ros/                       # ROS 发现层（CLI 适配器）
+│       ├── ros.go                  类型定义
+│       ├── detector.go             ROS1/2 运行时检测
+│       └── executor.go             CLI 执行器
+├── scripts/                       # Python 辅助脚本
+│   ├── bridge_ros1.py             ROS1 桥接脚本
+│   └── bridge_ros2.py             ROS2 桥接脚本
 ├── build/                         # 预编译二进制
 │   ├── agent-amd64
 │   ├── agent-aarch64
 │   └── agent-armv7l
 ├── models/                        # YOLO NCNN 模型
-├── car_bridge.py                  # ROS2 MQTT 桥接脚本
+├── car_bridge.py                  # ROS2 MQTT 桥接脚本（旧版兼容）
 ├── edge_ocr.py                    # PaddleOCR 推理脚本（部署到 /opt/agent/）
 ├── requirements-ocr.txt           # OCR Python 依赖
 ├── agent.sh                       # 一键安装脚本
