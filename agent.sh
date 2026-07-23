@@ -132,6 +132,11 @@ echo "  -> ${CONFIG_FILE}"
 
 # [4/5] 安装 systemd 服务
 echo "[4/5] Installing systemd service..."
+if [ "${INSTALL_BRIDGE}" = true ]; then
+  AGENT_EXEC="/bin/bash -c 'VER=\$(ls /opt/ros/ 2>/dev/null | head -1); case "\$VER" in noetic|melodic|kinetic|indigo|humble|jazzy|foxy|galactic|rolling) source /opt/ros/\$VER/setup.bash;; esac; exec ${AGENT_BIN} -config ${CONFIG_FILE}'"
+else
+  AGENT_EXEC="${AGENT_BIN} -config ${CONFIG_FILE}"
+fi
 cat > "${SERVICE_FILE}" << EOF
 [Unit]
 Description=Edge Agent - ${DEVICE_ID}
@@ -140,7 +145,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${AGENT_BIN} -config ${CONFIG_FILE}
+ExecStart=${AGENT_EXEC}
 Restart=always
 RestartSec=3
 RestartMaxDelaySec=15
