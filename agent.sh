@@ -333,9 +333,6 @@ echo ""
 echo "Commands:"
 echo "  sudo systemctl status agent"
 echo "  journalctl -u agent -f"
-if [ "${INSTALL_BRIDGE}" = true ]; then
-  echo "  Bridge scripts: /opt/agent/bridge_ros*.py"
-fi
 echo ""
 echo "To trigger OTA update:"
 echo "  mosquitto_pub ... -t edge/${DEVICE_ID}/mcp/call -m '{\"id\":\"o\",\"method\":\"check_update\",\"params\":{}}'"
