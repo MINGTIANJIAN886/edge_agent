@@ -18,8 +18,8 @@ SERVICE_DIR="/etc/systemd/system"
 AGENT_BIN="${INSTALL_DIR}/agent"
 CONFIG_FILE="${CONFIG_DIR}/config.yaml"
 SERVICE_FILE="${SERVICE_DIR}/agent.service"
-BRIDGE_SCRIPT="/home/liyankun/Desktop/car_bridge.py"
-BRIDGE_SERVICE_FILE="${SERVICE_DIR}/car_bridge.service"
+BRIDGE_SCRIPT1="/opt/agent/bridge_ros1.py"
+BRIDGE_SCRIPT2="/opt/agent/bridge_ros2.py"
 
 ARCH=$(uname -m)
 case "$ARCH" in
@@ -36,6 +36,11 @@ MQTT_PORT="${MQTT_PORT:-8883}"
 MQTT_USER="${MQTT_USER:-liyankun}"
 MQTT_PASS="${MQTT_PASS:-liyankun152455A}"
 OTA_SERVER="${OTA_SERVER:-https://amplifier-badge-awoke.ngrok-free.dev}"
+ROS_BRIDGE_SCRIPT1="${ROS_BRIDGE1:-/opt/agent/bridge_ros1.py}"
+ROS_BRIDGE_SCRIPT2="${ROS_BRIDGE2:-/opt/agent/bridge_ros2.py}"
+ROS_MAX_LINEAR="${ROS_MAX_LINEAR:-2.0}"
+ROS_MAX_ANGULAR="${ROS_MAX_ANGULAR:-3.14}"
+ROS_WATCHDOG="${ROS_WATCHDOG:-5}"
 INSTALL_BRIDGE=false
 
 for arg in "$@"; do
@@ -127,6 +132,15 @@ auth:
   method: "password"
   token: ""
   token_exchange: false
+
+ros:
+  enabled: ${INSTALL_BRIDGE}
+  bridge_script_ros1: "${ROS_BRIDGE_SCRIPT1}"
+  bridge_script_ros2: "${ROS_BRIDGE_SCRIPT2}"
+  bridge_python: "python3"
+  car_max_linear_speed: ${ROS_MAX_LINEAR}
+  car_max_angular_speed: ${ROS_MAX_ANGULAR}
+  safety_watchdog_timeout: ${ROS_WATCHDOG}
 EOF
 echo "  -> ${CONFIG_FILE}"
 
@@ -182,7 +196,27 @@ else
     echo "  -> PID: $!"
 fi
 
-# [5/5] 可选：安装 ROS2 Car Bridge
+# [5/5] 可选：部署 ROS 桥接脚本
+if [ "${INSTALL_BRIDGE}" = true ]; then
+  echo "[5/5] Deploying ROS bridge scripts..."
+  mkdir -p /opt/agent
+
+  echo "  -> downloading bridge_ros2.py..."
+  if curl -fsSL -o /opt/agent/bridge_ros2.py \
+    "https://raw.githubusercontent.com/${REPO}/main/scripts/bridge_ros2.py"; then
+    chmod +x /opt/agent/bridge_ros2.py
+    echo "       /opt/agent/bridge_ros2.py"
+  else
+    echo "       WARNING: download failed (agent will use CLI discovery fallback)"
+  fi
+
+  curl -fsSL -o /opt/agent/bridge_ros1.py \
+    "https://raw.githubusercontent.com/${REPO}/main/scripts/bridge_ros1.py" 2>/dev/null && \
+    chmod +x /opt/agent/bridge_ros1.py || true
+
+  echo "  -> ROS bridge enabled in config (ros.enabled=true)"
+  echo "  -> Agent auto-launches bridge on startup (no separate service)"
+fi
 if [ "${INSTALL_BRIDGE}" = true ]; then
   echo "[5/5] Installing ROS2 Car Bridge..."
   pip install paho-mqtt 2>/dev/null || pip3 install paho-mqtt 2>/dev/null || true
@@ -300,7 +334,7 @@ echo "Commands:"
 echo "  sudo systemctl status agent"
 echo "  journalctl -u agent -f"
 if [ "${INSTALL_BRIDGE}" = true ]; then
-  echo "  sudo systemctl status car_bridge"
+  echo "  Bridge scripts: /opt/agent/bridge_ros*.py"
 fi
 echo ""
 echo "To trigger OTA update:"
