@@ -1,9 +1,12 @@
-name: Build
+name: Build and Release
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -37,3 +40,30 @@ jobs:
         with:
           name: agent-${{ matrix.suffix }}
           path: build/agent-${{ matrix.suffix }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: build
+
+      - name: Generate SHA256 checksums
+        run: |
+          cd build
+          find . -type f -name "agent-*" -exec sha256sum {} \; > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: continuous
+          name: Continuous Build
+          body: Auto-built from main branch
+          files: build/**
+          make_latest: true
+          fail_on_unmatched_files: false

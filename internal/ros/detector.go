@@ -26,6 +26,11 @@ func Detect() Version {
 		return ROS1
 	}
 
+	if entries, err := os.ReadDir("/opt/ros"); err == nil && len(entries) > 0 {
+		log.Printf("ROS detection: found /opt/ros (%d distro(s)), assuming ROS2", len(entries))
+		return ROS2
+	}
+
 	log.Printf("ROS detection: none")
 	return None
 }

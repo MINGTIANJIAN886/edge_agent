@@ -8,6 +8,7 @@ set -euo pipefail
 #    curl -fsSL https://raw.githubusercontent.com/MINGTIANJIAN886/edge_agent/main/agent.sh | sudo bash -s -- --bridge
 # ============================================================
 
+REPO="MINGTIANJIAN886/edge_agent"
 INSTALL_DIR="/usr/local/bin"
 CONFIG_DIR="/etc/agent"
 LOG_DIR="/var/log/agent"
@@ -59,24 +60,21 @@ echo ""
 echo "[1/5] Creating directories..."
 mkdir -p "${INSTALL_DIR}" "${CONFIG_DIR}" "${LOG_DIR}" "${DOWNLOAD_DIR}"
 
-# [2/5] 下载并解压
+# [2/5] 下载 agent 二进制
 if [ ! -f "${AGENT_BIN}" ]; then
-  echo "[2/5] Downloading agent..."
-  TMPDIR=$(mktemp -d)
-  trap "rm -rf ${TMPDIR}" EXIT
-  cd "${TMPDIR}"
-  curl -fsSL --connect-timeout 30 --max-time 600 -o repo.tar.gz \
-    "https://codeload.github.com/MINGTIANJIAN886/edge_agent/tar.gz/main"
-  tar -xzf repo.tar.gz
-  tar -xzf edge_agent-main/agent.tar.gz 2>/dev/null || true
+  echo "[2/5] Downloading agent (${BINARY}) from GitHub Release..."
+  DOWNLOAD_URL="https://github.com/${REPO}/releases/latest/download/${BINARY}"
+  MIRROR_URL="https://ghproxy.com/${DOWNLOAD_URL}"
 
-  if [ -f "agent/build/${BINARY}" ]; then
-    cp "agent/build/${BINARY}" "${AGENT_BIN}"
-  elif [ -f "edge_agent-main/build/${BINARY}" ]; then
-    cp "edge_agent-main/build/${BINARY}" "${AGENT_BIN}"
+  if curl -fsSL --connect-timeout 10 --max-time 120 -o "${AGENT_BIN}" "${DOWNLOAD_URL}"; then
+    echo "  -> downloaded from GitHub Releases"
+  elif curl -fsSL --connect-timeout 10 --max-time 120 -o "${AGENT_BIN}" "${MIRROR_URL}"; then
+    echo "  -> downloaded from mirror (ghproxy.com)"
   else
-    echo "WARNING: Pre-built binary not found, skipping agent download"
-    echo "Build manually: cd edge_agent && make build-aarch64"
+    echo "WARNING: Cannot download binary from GitHub Releases."
+    echo "  Try: make build && scp build/${BINARY} ${DEVICE_ID}:${AGENT_BIN}"
+    echo "  Or set up GitHub Actions Release (push to main to trigger build)"
+    touch "${AGENT_BIN}"
   fi
   chmod +x "${AGENT_BIN}" 2>/dev/null || true
 else
@@ -168,10 +166,9 @@ if [ "${INSTALL_BRIDGE}" = true ]; then
   echo "[5/5] Installing ROS2 Car Bridge..."
   pip install paho-mqtt 2>/dev/null || pip3 install paho-mqtt 2>/dev/null || true
 
-  # 下载桥接脚本
   mkdir -p "$(dirname "${BRIDGE_SCRIPT}")"
   curl -fsSL -o "${BRIDGE_SCRIPT}" \
-    "https://raw.githubusercontent.com/MINGTIANJIAN886/edge_agent/main/car_bridge.py" 2>/dev/null || {
+    "https://raw.githubusercontent.com/${REPO}/main/car_bridge.py" 2>/dev/null || {
     cat > "${BRIDGE_SCRIPT}" << 'PYEOF'
 import rclpy
 from rclpy.node import Node
@@ -256,7 +253,7 @@ After=network.target agent.service
 [Service]
 Type=simple
 User=liyankun
-ExecStart=/bin/bash -c "VER=$(ls /opt/ros/ 2>/dev/null | head -1); source /opt/ros/$VER/setup.bash 2>/dev/null; exec python3 ${BRIDGE_SCRIPT}"
+ExecStart=/bin/bash -c "VER=\$(ls /opt/ros/ 2>/dev/null | head -1); source /opt/ros/\$VER/setup.bash 2>/dev/null; exec python3 ${BRIDGE_SCRIPT}"
 Restart=on-failure
 RestartSec=5
 
