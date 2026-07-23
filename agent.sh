@@ -133,11 +133,7 @@ echo "  -> ${CONFIG_FILE}"
 # [4/5] 安装 systemd 服务
 echo "[4/5] Installing systemd service..."
 if [ "${INSTALL_BRIDGE}" = true ]; then
-  AGENT_EXEC="/bin/bash -c \"VER=\$(ls /opt/ros/ 2>/dev/null | head -1); source /opt/ros/\$VER/setup.bash 2>/dev/null; exec ${AGENT_BIN} -config ${CONFIG_FILE}\""
-else
-  AGENT_EXEC="${AGENT_BIN} -config ${CONFIG_FILE}"
-fi
-cat > "${SERVICE_FILE}" << EOF
+  cat > "${SERVICE_FILE}" << EOF
 [Unit]
 Description=Edge Agent - ${DEVICE_ID}
 After=network.target
@@ -145,7 +141,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${AGENT_EXEC}
+ExecStart=/bin/bash -c "VER=\$(ls /opt/ros/ 2>/dev/null | head -1); source /opt/ros/\$VER/setup.bash 2>/dev/null; exec ${AGENT_BIN} -config ${CONFIG_FILE}"
 Restart=always
 RestartSec=3
 RestartMaxDelaySec=15
@@ -155,6 +151,26 @@ StandardError=journal
 [Install]
 WantedBy=multi-user.target
 EOF
+else
+  cat > "${SERVICE_FILE}" << EOF
+[Unit]
+Description=Edge Agent - ${DEVICE_ID}
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=${AGENT_BIN} -config ${CONFIG_FILE}
+Restart=always
+RestartSec=3
+RestartMaxDelaySec=15
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+fi
 
 if command -v systemctl &>/dev/null; then
     systemctl daemon-reload
