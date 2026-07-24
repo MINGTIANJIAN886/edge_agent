@@ -243,6 +243,9 @@ class Ros2Bridge(Node):
 
 
 def main():
+    import os
+    os.makedirs("/tmp/ros/log", exist_ok=True)
+    os.environ["ROS_HOME"] = "/tmp/ros"
     rclpy.init()
     bridge = Ros2Bridge()
     try:
