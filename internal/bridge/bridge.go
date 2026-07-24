@@ -39,6 +39,7 @@ type Manager struct {
 	cancel   context.CancelFunc
 	stdin    *bufio.Writer
 	running  bool
+	stopped  bool
 	deviceID string
 	mqtt     mqtt.Client
 }
@@ -124,6 +125,7 @@ func (m *Manager) Start() error {
 
 	m.cmd = cmd
 	m.stdin = bufio.NewWriter(stdin)
+	m.stopped = false
 
 	if err := cmd.Start(); err != nil {
 		cancel()
@@ -146,6 +148,8 @@ func (m *Manager) Stop() error {
 	if !m.running || m.cmd == nil {
 		return nil
 	}
+
+	m.stopped = true
 
 	if m.cancel != nil {
 		m.cancel()
@@ -224,6 +228,7 @@ func (m *Manager) waitExit() {
 	err := m.cmd.Wait()
 	m.mu.Lock()
 	m.running = false
+	wasStopped := m.stopped
 	m.mu.Unlock()
 
 	if err != nil {
@@ -237,6 +242,14 @@ func (m *Manager) waitExit() {
 		Success: err == nil,
 		Error:   func() string { if err != nil { return err.Error() }; return "" }(),
 	})
+
+	if !wasStopped {
+		log.Println("bridge exited unexpectedly, restarting in 3s...")
+		time.Sleep(3 * time.Second)
+		if startErr := m.Start(); startErr != nil {
+			log.Printf("bridge auto-restart failed: %v", startErr)
+		}
+	}
 }
 
 func (m *Manager) publishBridgeOutput(output ros.BridgeOutput) {
