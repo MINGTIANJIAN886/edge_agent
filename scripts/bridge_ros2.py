@@ -226,6 +226,12 @@ class Ros2Bridge(Node):
                     setattr(msg, key, value)
                 else:
                     setattr(msg, key, value)
+            elif "_" in key:
+                parts = key.split("_", 1)
+                if hasattr(msg, parts[0]):
+                    sub = getattr(msg, parts[0])
+                    if hasattr(sub, "get_fields_and_field_types"):
+                        setattr(sub, parts[1], value)
 
     def _ros_to_dict(self, msg):
         fields = {}
