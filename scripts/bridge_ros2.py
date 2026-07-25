@@ -218,6 +218,8 @@ class Ros2Bridge(Node):
         if data is None:
             return
         for key, value in data.items():
+            if isinstance(value, int) and not isinstance(value, bool):
+                value = float(value)
             if hasattr(msg, key):
                 field = getattr(msg, key)
                 if hasattr(field, "get_fields_and_field_types"):
