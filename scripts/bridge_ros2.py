@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-import sys, json, threading, traceback
-from queue import Queue, Empty as QueueEmpty
+import sys, json, os
 
 import rclpy
 from rclpy.node import Node
@@ -11,34 +10,36 @@ from std_srvs.srv import Empty, SetBool, Trigger
 
 
 class Ros2Bridge(Node):
+    CMD_PATH = "/tmp/edge_bridge_cmd"
+
     def __init__(self):
         super().__init__("edge_ros_bridge")
         self.get_logger().info("ROS2 bridge starting")
 
         self._pub_cache = {}
         self._sub_cache = {}
-        self._stdin_queue = Queue()
+        self._last_pos = 0
+        self._running = True
 
-        self._stdin_thread = threading.Thread(target=self._read_stdin, daemon=True)
-        self._stdin_thread.start()
+        self._timer = self.create_timer(0.1, self._poll_file)
+        self.get_logger().info(f"ROS2 bridge ready, polling {self.CMD_PATH}")
 
-        self._timer = self.create_timer(0.05, self._process_stdin)
-        self.get_logger().info("ROS2 bridge ready")
-
-    def _read_stdin(self):
-        for line in sys.stdin:
-            line = line.strip()
-            if not line:
-                continue
-            self._stdin_queue.put(line)
-
-    def _process_stdin(self):
+    def _poll_file(self):
         try:
-            while True:
-                line = self._stdin_queue.get_nowait()
-                self._handle_input(line)
-        except QueueEmpty:
-            pass
+            if not os.path.exists(self.CMD_PATH):
+                return
+            with open(self.CMD_PATH, "r") as f:
+                f.seek(self._last_pos)
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            self._handle_input(line)
+                        except Exception as e:
+                            self.get_logger().error(f"handle error: {e}")
+                self._last_pos = f.tell()
+        except Exception as e:
+            self.get_logger().error(f"poll error: {e}")
 
     def _handle_input(self, line):
         try:
@@ -252,7 +253,6 @@ class Ros2Bridge(Node):
 
 
 def main():
-    import os
     os.makedirs("/tmp/ros/log", exist_ok=True)
     os.environ["ROS_HOME"] = "/tmp/ros"
     rclpy.init()

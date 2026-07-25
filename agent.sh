@@ -145,28 +145,9 @@ EOF
 echo "  -> ${CONFIG_FILE}"
 
 # [4/5] 安装 systemd 服务
-echo "[4/5] Installing systemd service..."
-if [ "${INSTALL_BRIDGE}" = true ]; then
-  cat > "${SERVICE_FILE}" << EOF
-[Unit]
-Description=Edge Agent - ${DEVICE_ID}
-After=network.target
-Wants=network-online.target
+echo "[4/5] Installing systemd services..."
 
-[Service]
-Type=simple
-ExecStart=/bin/bash -c "VER=\$(ls /opt/ros/ 2>/dev/null | head -1); source /opt/ros/\$VER/setup.bash 2>/dev/null; exec ${AGENT_BIN} -config ${CONFIG_FILE}"
-Restart=always
-RestartSec=3
-RestartMaxDelaySec=15
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-EOF
-else
-  cat > "${SERVICE_FILE}" << EOF
+cat > "${SERVICE_FILE}" << EOF
 [Unit]
 Description=Edge Agent - ${DEVICE_ID}
 After=network.target
@@ -184,21 +165,20 @@ StandardError=journal
 [Install]
 WantedBy=multi-user.target
 EOF
-fi
 
 if command -v systemctl &>/dev/null; then
     systemctl daemon-reload
     systemctl enable agent
     systemctl restart agent
-    echo "  -> systemd service installed and started"
+    echo "  -> agent.service installed and started"
 else
     nohup "${AGENT_BIN}" -config "${CONFIG_FILE}" > "${LOG_DIR}/agent.log" 2>&1 &
     echo "  -> PID: $!"
 fi
 
-# [5/5] 可选：部署 ROS 桥接脚本
+# [5/5] 可选：部署 ROS 桥接脚本 + car_bridge.service
 if [ "${INSTALL_BRIDGE}" = true ]; then
-  echo "[5/5] Deploying ROS bridge scripts..."
+  echo "[5/5] Deploying ROS bridge scripts and service..."
   mkdir -p /opt/agent
 
   echo "  -> downloading bridge_ros2.py..."
@@ -207,15 +187,37 @@ if [ "${INSTALL_BRIDGE}" = true ]; then
     chmod +x /opt/agent/bridge_ros2.py
     echo "       /opt/agent/bridge_ros2.py"
   else
-    echo "       WARNING: download failed (agent will use CLI discovery fallback)"
+    echo "       WARNING: download failed, bridge will not work"
   fi
 
   curl -fsSL -o /opt/agent/bridge_ros1.py \
     "https://raw.githubusercontent.com/${REPO}/main/scripts/bridge_ros1.py" 2>/dev/null && \
     chmod +x /opt/agent/bridge_ros1.py || true
 
+  cat > "${SERVICE_DIR}/car_bridge.service" << EOF
+[Unit]
+Description=ROS Car Bridge (reads /tmp/edge_bridge_cmd)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash -c "VER=\$(ls /opt/ros/ 2>/dev/null | head -1); source /opt/ros/\$VER/setup.bash 2>/dev/null; exec python3 /opt/agent/bridge_ros2.py"
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  if command -v systemctl &>/dev/null; then
+    systemctl daemon-reload
+    systemctl enable car_bridge
+    systemctl restart car_bridge 2>/dev/null || true
+    echo "  -> car_bridge.service installed and started"
+  fi
+
   echo "  -> ROS bridge enabled in config (ros.enabled=true)"
-  echo "  -> Agent auto-launches bridge on startup (no separate service)"
+  echo "  -> car_bridge.service manages bridge lifecycle (separate from agent)"
 fi
 
 echo ""
