@@ -72,16 +72,17 @@ class Ros2Bridge(Node):
             self._send("error", error="publish: topic and msg_type required")
             return
 
-        pub = self._pub_cache.get(topic)
-        if pub is None:
+        cached = self._pub_cache.get(topic)
+        if cached is None:
             cls = self._resolve_type(msg_type)
             if cls is None:
                 self._send("error", error=f"unknown msg type: {msg_type}")
                 return
             pub = self.create_publisher(cls, topic, 10)
             self._pub_cache[topic] = (pub, cls)
+        else:
+            pub, cls = cached
 
-        _, cls = pub
         ros_msg = cls()
         self._dict_to_ros(ros_msg, data)
         pub.publish(ros_msg)
