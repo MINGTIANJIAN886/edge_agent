@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import sys, json, threading, traceback
-from queue import Queue, Empty
+from queue import Queue, Empty as QueueEmpty
 
 import rclpy
 from rclpy.node import Node
@@ -37,7 +37,7 @@ class Ros2Bridge(Node):
             while True:
                 line = self._stdin_queue.get_nowait()
                 self._handle_input(line)
-        except Empty:
+        except QueueEmpty:
             pass
 
     def _handle_input(self, line):
