@@ -12,7 +12,7 @@ func Detect() Version {
 	case "noetic", "melodic", "kinetic", "indigo":
 		log.Printf("ROS detection: ROS1 (distro=%s)", distro)
 		return ROS1
-	case "humble", "jazzy", "foxy", "galactic", "rolling":
+	case "humble", "iron", "jazzy", "foxy", "galactic", "rolling":
 		log.Printf("ROS detection: ROS2 (distro=%s)", distro)
 		return ROS2
 	}

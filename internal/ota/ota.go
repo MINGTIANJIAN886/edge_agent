@@ -15,8 +15,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MINGTIANJIAN886/edge_agent/internal/config"
 	mqtt "github.com/eclipse/paho.mqtt.golang"
-	"github.com/user/agent/internal/config"
 )
 
 type ManifestFile struct {
@@ -52,6 +52,9 @@ func FetchManifest(serverURL, versionPath string) (*Manifest, error) {
 		return nil, fmt.Errorf("fetch manifest failed: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("manifest server returned %s", resp.Status)
+	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -76,6 +79,9 @@ func FetchVersion(serverURL, versionPath string) (*VersionInfo, error) {
 		return nil, fmt.Errorf("fetch version failed: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("version server returned %s", resp.Status)
+	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -110,6 +116,11 @@ func DownloadFile(url, sha256sum, destPath string) error {
 		return fmt.Errorf("download failed: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		out.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("download server returned %s", resp.Status)
+	}
 
 	written, err := io.Copy(out, resp.Body)
 	out.Close()
@@ -160,7 +171,14 @@ func DownloadManifestFiles(manifest *Manifest, destDir string) error {
 	}
 
 	for _, f := range manifest.Files {
-		destPath := filepath.Join(destDir, f.Name)
+		if f.SHA256 == "" {
+			return fmt.Errorf("download %s rejected: sha256 is required", f.Name)
+		}
+		destPath := filepath.Clean(filepath.Join(destDir, f.Name))
+		rel, err := filepath.Rel(destDir, destPath)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+			return fmt.Errorf("download %s rejected: path escapes model_dir", f.Name)
+		}
 		if err := DownloadFile(f.URL, f.SHA256, destPath); err != nil {
 			return fmt.Errorf("download %s failed: %w", f.Name, err)
 		}
@@ -385,7 +403,14 @@ func publishResult(client mqtt.Client, deviceID, topic string, success bool, mes
 	if topic == "" || client == nil {
 		return
 	}
-	payload := fmt.Sprintf(`{"device_id":"%s","success":%v,"message":"%s"}`,
-		deviceID, success, message)
-	client.Publish(topic, 1, false, []byte(payload))
+	payload, err := json.Marshal(map[string]interface{}{
+		"device_id": deviceID,
+		"success":   success,
+		"message":   message,
+	})
+	if err != nil {
+		log.Printf("OTA result marshal failed: %v", err)
+		return
+	}
+	client.Publish(topic, 1, false, payload)
 }

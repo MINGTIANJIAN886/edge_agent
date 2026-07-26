@@ -15,7 +15,7 @@ mqtt:
   port: 8883
   client_id: "agent-pi-001"
   username: "liyankun"
-  password: "liyankun152455A"
+  password: "<set-on-device>"
   topic:
     command: "edge/pi-001/command"
     download: "edge/pi-001/download"
@@ -41,6 +41,7 @@ inference:
 
 ocr:
   enabled: false
+  python_bin: "/opt/agent/ocr_env/bin/python3"
   script_path: "/opt/agent/edge_ocr.py"
   interval: 30
   conf_threshold: 0.5
@@ -55,7 +56,7 @@ ros:
   car_max_linear_speed: 2.0
   car_max_angular_speed: 3.14
   safety_watchdog_timeout: 5
-  cmd_vel_topic: "edge/pi-001/car/cmd_vel"
+  cmd_vel_topic: "/cmd_vel"
   bridge_result_topic: "edge/pi-001/bridge/result"
 
 auth:
@@ -76,7 +77,7 @@ cert:
 | `MQTT_BROKER` | `ca15b49bc8b442638f0cade1e45585ce.s1.eu.hivemq.cloud` | MQTT 地址 |
 | `MQTT_PORT` | `8883` | MQTT 端口 |
 | `MQTT_USER` | `liyankun` | MQTT 用户名 |
-| `MQTT_PASS` | `liyankun152455A` | MQTT 密码 |
+| `MQTT_PASS` | 无，必须设置 | MQTT 密码 |
 | `OTA_SERVER` | `https://amplifier-badge-awoke.ngrok-free.dev` | OTA 服务器 |
 | `ROS_ENABLED` | `false` | 启用 ROS 桥接 |
 | `ROS_MAX_LINEAR` | `2.0` | 最大线速度 |

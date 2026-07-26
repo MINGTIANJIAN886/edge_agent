@@ -1,4 +1,4 @@
-module github.com/user/agent
+module github.com/MINGTIANJIAN886/edge_agent
 
 go 1.18
 

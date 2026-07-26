@@ -10,7 +10,7 @@ from std_srvs.srv import Empty, SetBool, Trigger
 
 
 class Ros2Bridge(Node):
-    CMD_PATH = "/tmp/edge_bridge_cmd"
+    CMD_PATH = os.environ.get("EDGE_BRIDGE_CMD_PATH", "/tmp/edge_bridge_cmd")
 
     def __init__(self):
         super().__init__("edge_ros_bridge")
@@ -18,7 +18,7 @@ class Ros2Bridge(Node):
 
         self._pub_cache = {}
         self._sub_cache = {}
-        self._last_pos = 0
+        self._last_pos = os.path.getsize(self.CMD_PATH) if os.path.exists(self.CMD_PATH) else 0
         self._running = True
 
         self._timer = self.create_timer(0.1, self._poll_file)
@@ -28,6 +28,9 @@ class Ros2Bridge(Node):
         try:
             if not os.path.exists(self.CMD_PATH):
                 return
+            size = os.path.getsize(self.CMD_PATH)
+            if size < self._last_pos:
+                self._last_pos = 0
             with open(self.CMD_PATH, "r") as f:
                 f.seek(self._last_pos)
                 for line in f:

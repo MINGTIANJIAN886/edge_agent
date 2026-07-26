@@ -18,8 +18,7 @@ SERVICE_DIR="/etc/systemd/system"
 AGENT_BIN="${INSTALL_DIR}/agent"
 CONFIG_FILE="${CONFIG_DIR}/config.yaml"
 SERVICE_FILE="${SERVICE_DIR}/agent.service"
-BRIDGE_SCRIPT1="/opt/agent/bridge_ros1.py"
-BRIDGE_SCRIPT2="/opt/agent/bridge_ros2.py"
+BRIDGE_RUNNER="/opt/agent/run_bridge.sh"
 
 ARCH=$(uname -m)
 case "$ARCH" in
@@ -34,14 +33,17 @@ DEVICE_ID="${DEVICE_ID:-pi-001}"
 MQTT_BROKER="${MQTT_BROKER:-ca15b49bc8b442638f0cade1e45585ce.s1.eu.hivemq.cloud}"
 MQTT_PORT="${MQTT_PORT:-8883}"
 MQTT_USER="${MQTT_USER:-liyankun}"
-MQTT_PASS="${MQTT_PASS:-liyankun152455A}"
+MQTT_PASS="${MQTT_PASS:-}"
 OTA_SERVER="${OTA_SERVER:-https://amplifier-badge-awoke.ngrok-free.dev}"
 ROS_BRIDGE_SCRIPT1="${ROS_BRIDGE1:-/opt/agent/bridge_ros1.py}"
 ROS_BRIDGE_SCRIPT2="${ROS_BRIDGE2:-/opt/agent/bridge_ros2.py}"
 ROS_MAX_LINEAR="${ROS_MAX_LINEAR:-2.0}"
 ROS_MAX_ANGULAR="${ROS_MAX_ANGULAR:-3.14}"
 ROS_WATCHDOG="${ROS_WATCHDOG:-5}"
-INSTALL_BRIDGE=false
+OCR_ENABLED="${OCR_ENABLED:-false}"
+OCR_INTERVAL="${OCR_INTERVAL:-30}"
+OCR_CONF_THRESHOLD="${OCR_CONF_THRESHOLD:-0.5}"
+INSTALL_BRIDGE="${ROS_ENABLED:-false}"
 
 for arg in "$@"; do
   case "$arg" in
@@ -52,6 +54,13 @@ done
 
 if [ $# -gt 0 ] && [[ "$1" != --* ]]; then
   DEVICE_ID="$1"
+fi
+
+if [ -z "${MQTT_PASS}" ]; then
+  echo "ERROR: MQTT_PASS must be provided through the environment." >&2
+  echo "Example:" >&2
+  echo "  curl -fsSL https://raw.githubusercontent.com/${REPO}/main/agent.sh | sudo env DEVICE_ID=jetson-01 MQTT_PASS='<password>' bash" >&2
+  exit 1
 fi
 
 echo "=== Edge Agent Installer ==="
@@ -70,18 +79,35 @@ if [ ! -f "${AGENT_BIN}" ]; then
   echo "[2/5] Downloading agent (${BINARY}) from GitHub Release..."
   DOWNLOAD_URL="https://github.com/${REPO}/releases/latest/download/${BINARY}"
   MIRROR_URL="https://ghproxy.com/${DOWNLOAD_URL}"
+  CHECKSUM_URL="https://github.com/${REPO}/releases/latest/download/SHA256SUMS"
+  AGENT_TMP="$(mktemp)"
+  CHECKSUM_TMP="$(mktemp)"
+  trap 'rm -f "${AGENT_TMP}" "${CHECKSUM_TMP}"' EXIT
 
-  if curl -fsSL --connect-timeout 10 --max-time 120 -o "${AGENT_BIN}" "${DOWNLOAD_URL}"; then
+  if curl -fsSL --connect-timeout 10 --max-time 120 -o "${AGENT_TMP}" "${DOWNLOAD_URL}"; then
     echo "  -> downloaded from GitHub Releases"
-  elif curl -fsSL --connect-timeout 10 --max-time 120 -o "${AGENT_BIN}" "${MIRROR_URL}"; then
+  elif curl -fsSL --connect-timeout 10 --max-time 120 -o "${AGENT_TMP}" "${MIRROR_URL}"; then
     echo "  -> downloaded from mirror (ghproxy.com)"
   else
-    echo "WARNING: Cannot download binary from GitHub Releases."
-    echo "  Try: make build && scp build/${BINARY} ${DEVICE_ID}:${AGENT_BIN}"
-    echo "  Or set up GitHub Actions Release (push to main to trigger build)"
-    touch "${AGENT_BIN}"
+    echo "ERROR: Cannot download binary from GitHub Releases." >&2
+    exit 1
   fi
-  chmod +x "${AGENT_BIN}" 2>/dev/null || true
+
+  if ! curl -fsSL --connect-timeout 10 --max-time 30 -o "${CHECKSUM_TMP}" "${CHECKSUM_URL}"; then
+    echo "ERROR: Cannot download SHA256SUMS." >&2
+    exit 1
+  fi
+  EXPECTED_SHA="$(awk -v name="${BINARY}" '$2 ~ ("/" name "$") || $2 == name {print $1; exit}' "${CHECKSUM_TMP}")"
+  if [ -z "${EXPECTED_SHA}" ]; then
+    echo "ERROR: No checksum found for ${BINARY}." >&2
+    exit 1
+  fi
+  ACTUAL_SHA="$(sha256sum "${AGENT_TMP}" | awk '{print $1}')"
+  if [ "${EXPECTED_SHA}" != "${ACTUAL_SHA}" ]; then
+    echo "ERROR: SHA256 mismatch for ${BINARY}." >&2
+    exit 1
+  fi
+  install -m 0755 "${AGENT_TMP}" "${AGENT_BIN}"
 else
   echo "[2/5] Agent already installed at ${AGENT_BIN}"
 fi
@@ -133,6 +159,19 @@ auth:
   token: ""
   token_exchange: false
 
+inference:
+  service_url: "http://localhost:8080"
+  timeout: 30
+
+ocr:
+  enabled: ${OCR_ENABLED}
+  python_bin: "/opt/agent/ocr_env/bin/python3"
+  script_path: "/opt/agent/edge_ocr.py"
+  interval: ${OCR_INTERVAL}
+  conf_threshold: ${OCR_CONF_THRESHOLD}
+  command_topic: "edge/${DEVICE_ID}/ocr/command"
+  result_topic: "edge/${DEVICE_ID}/ocr/result"
+
 ros:
   enabled: ${INSTALL_BRIDGE}
   bridge_script_ros1: "${ROS_BRIDGE_SCRIPT1}"
@@ -141,7 +180,10 @@ ros:
   car_max_linear_speed: ${ROS_MAX_LINEAR}
   car_max_angular_speed: ${ROS_MAX_ANGULAR}
   safety_watchdog_timeout: ${ROS_WATCHDOG}
+  cmd_vel_topic: "/cmd_vel"
+  bridge_result_topic: "edge/${DEVICE_ID}/bridge/result"
 EOF
+chmod 0600 "${CONFIG_FILE}"
 echo "  -> ${CONFIG_FILE}"
 
 # [4/5] 安装 systemd 服务
@@ -150,7 +192,7 @@ echo "[4/5] Installing systemd services..."
 cat > "${SERVICE_FILE}" << EOF
 [Unit]
 Description=Edge Agent - ${DEVICE_ID}
-After=network.target
+After=network-online.target
 Wants=network-online.target
 
 [Service]
@@ -158,7 +200,7 @@ Type=simple
 ExecStart=${AGENT_BIN} -config ${CONFIG_FILE}
 Restart=always
 RestartSec=3
-RestartMaxDelaySec=15
+UMask=0077
 StandardOutput=journal
 StandardError=journal
 
@@ -194,6 +236,13 @@ if [ "${INSTALL_BRIDGE}" = true ]; then
     "https://raw.githubusercontent.com/${REPO}/main/scripts/bridge_ros1.py" 2>/dev/null && \
     chmod +x /opt/agent/bridge_ros1.py || true
 
+  if ! curl -fsSL -o "${BRIDGE_RUNNER}" \
+    "https://raw.githubusercontent.com/${REPO}/main/scripts/run_bridge.sh"; then
+    echo "       ERROR: bridge launcher download failed" >&2
+    exit 1
+  fi
+  chmod +x "${BRIDGE_RUNNER}"
+
   cat > "${SERVICE_DIR}/car_bridge.service" << EOF
 [Unit]
 Description=ROS Car Bridge (reads /tmp/edge_bridge_cmd)
@@ -201,7 +250,8 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/bin/bash -c "VER=\$(ls /opt/ros/ 2>/dev/null | head -1); source /opt/ros/\$VER/setup.bash 2>/dev/null; exec python3 /opt/agent/bridge_ros2.py"
+Environment=ROS_HOME=/tmp/ros
+ExecStart=${BRIDGE_RUNNER}
 Restart=always
 RestartSec=3
 
@@ -218,6 +268,20 @@ EOF
 
   echo "  -> ROS bridge enabled in config (ros.enabled=true)"
   echo "  -> car_bridge.service manages bridge lifecycle (separate from agent)"
+fi
+
+if [ "${OCR_ENABLED}" = true ]; then
+  echo "  -> downloading OCR script..."
+  mkdir -p /opt/agent
+  if ! curl -fsSL -o /opt/agent/edge_ocr.py \
+    "https://raw.githubusercontent.com/${REPO}/main/edge_ocr.py"; then
+    echo "       ERROR: OCR script download failed" >&2
+    exit 1
+  fi
+  chmod +x /opt/agent/edge_ocr.py
+  if [ ! -x /opt/agent/ocr_env/bin/python3 ]; then
+    echo "       WARNING: install OCR dependencies in /opt/agent/ocr_env before enabling OCR"
+  fi
 fi
 
 echo ""

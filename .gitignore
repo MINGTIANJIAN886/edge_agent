@@ -1,0 +1,12 @@
+build/
+dist/
+*.log
+*.tmp
+*.swp
+.env
+config.local.yaml
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.idea/
+.vscode/

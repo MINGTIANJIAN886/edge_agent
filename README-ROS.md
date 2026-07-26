@@ -16,6 +16,8 @@ Agent 运行时自动检测 ROS 版本，无需重新编译。
 sudo mkdir -p /opt/agent
 sudo curl -fsSL https://raw.githubusercontent.com/MINGTIANJIAN886/edge_agent/main/scripts/bridge_ros2.py -o /opt/agent/bridge_ros2.py
 sudo curl -fsSL https://raw.githubusercontent.com/MINGTIANJIAN886/edge_agent/main/scripts/bridge_ros1.py -o /opt/agent/bridge_ros1.py
+sudo curl -fsSL https://raw.githubusercontent.com/MINGTIANJIAN886/edge_agent/main/scripts/run_bridge.sh -o /opt/agent/run_bridge.sh
+sudo chmod +x /opt/agent/bridge_ros1.py /opt/agent/bridge_ros2.py /opt/agent/run_bridge.sh
 ```
 
 config.yaml 启用：
@@ -28,22 +30,20 @@ ros:
   car_max_linear_speed: 2.0
   car_max_angular_speed: 3.14
   safety_watchdog_timeout: 5
+  cmd_vel_topic: "/cmd_vel"
 ```
+
+`cmd_vel_topic` 是 ROS Topic，不是 MQTT Topic。MQTT 控制 Topic 仍为 `edge/<device_id>/car/cmd_vel`。
 
 ## 桥接生命周期
 
 ```bash
-BROKER="ca15b49bc8b442638f0cade1e45585ce.s1.eu.hivemq.cloud"
-PORT=8883
-USER="liyankun"
-PASS="liyankun152455A"
-
-mosquitto_pub -h "$BROKER" -p $PORT --cafile /etc/ssl/certs/ca-certificates.crt \
-  -u "$USER" -P "$PASS" \
-  -t "edge/pi-001/bridge/control" -m '{"cmd":"start"}'  # start | stop | status | restart
+sudo systemctl status car_bridge
+sudo systemctl restart car_bridge
+sudo journalctl -u car_bridge -f
 ```
 
-结果反馈: `edge/pi-001/bridge/result`
+`run_bridge.sh` 会根据 `ROS_DISTRO` 和本机 CLI 自动选择 ROS1 或 ROS2 桥。
 
 ## 小车控制
 

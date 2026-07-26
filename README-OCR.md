@@ -20,7 +20,6 @@ sudo apt install -y libhdf5-dev libatlas-base-dev
 ```bash
 sudo mkdir -p /opt/agent
 sudo curl -fsSL https://raw.githubusercontent.com/MINGTIANJIAN886/edge_agent/main/edge_ocr.py -o /opt/agent/edge_ocr.py && sudo chmod +x /opt/agent/edge_ocr.py
-sudo sed -i '1i#!/opt/agent/ocr_env/bin/python3' /opt/agent/edge_ocr.py
 ```
 
 ## 配置
@@ -28,6 +27,7 @@ sudo sed -i '1i#!/opt/agent/ocr_env/bin/python3' /opt/agent/edge_ocr.py
 ```yaml
 ocr:
   enabled: true
+  python_bin: "/opt/agent/ocr_env/bin/python3"
   script_path: "/opt/agent/edge_ocr.py"
   interval: 30
   conf_threshold: 0.5
@@ -38,8 +38,12 @@ ocr:
 一键安装：
 
 ```bash
-OCR_ENABLED=true OCR_INTERVAL=60 \
-  curl -fsSL https://raw.githubusercontent.com/MINGTIANJIAN886/edge_agent/main/agent.sh | sudo bash
+export MQTT_PASS="<your-password>"
+export OCR_ENABLED=true
+export OCR_INTERVAL=60
+curl -fsSL https://raw.githubusercontent.com/MINGTIANJIAN886/edge_agent/main/agent.sh \
+  | sudo --preserve-env=MQTT_PASS,OCR_ENABLED,OCR_INTERVAL bash
+unset MQTT_PASS OCR_ENABLED OCR_INTERVAL
 ```
 
 ## MQTT 指令
@@ -73,11 +77,11 @@ sudo journalctl -u agent -f
 
 mosquitto_pub -h "ca15b49bc8b442638f0cade1e45585ce.s1.eu.hivemq.cloud" \
   -p 8883 --cafile /etc/ssl/certs/ca-certificates.crt \
-  -u "liyankun" -P "liyankun152455A" \
+  -u "liyankun" -P "${MQTT_PASS:?export MQTT_PASS first}" \
   -t "edge/pi-001/ocr/command" -m '{}'
 
 mosquitto_sub -h "ca15b49bc8b442638f0cade1e45585ce.s1.eu.hivemq.cloud" \
   -p 8883 --cafile /etc/ssl/certs/ca-certificates.crt \
-  -u "liyankun" -P "liyankun152455A" \
+  -u "liyankun" -P "${MQTT_PASS:?export MQTT_PASS first}" \
   -t "edge/pi-001/ocr/result" -v
 ```

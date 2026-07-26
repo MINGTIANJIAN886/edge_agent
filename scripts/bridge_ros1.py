@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-import sys, json, threading
-from queue import Queue, Empty
+import json
+import os
+import sys
 
 import rospy
 from geometry_msgs.msg import Twist
@@ -10,34 +11,34 @@ from std_srvs.srv import Empty, SetBool, Trigger
 
 
 class Ros1Bridge:
+    CMD_PATH = os.environ.get("EDGE_BRIDGE_CMD_PATH", "/tmp/edge_bridge_cmd")
+
     def __init__(self):
         rospy.init_node("edge_ros_bridge", anonymous=True)
         rospy.loginfo("ROS1 bridge starting")
 
         self._pubs = {}
         self._subs = {}
-        self._stdin_queue = Queue()
+        self._last_pos = os.path.getsize(self.CMD_PATH) if os.path.exists(self.CMD_PATH) else 0
+        self._timer = rospy.Timer(rospy.Duration(0.1), self._poll_file)
+        rospy.loginfo(f"ROS1 bridge ready, polling {self.CMD_PATH}")
 
-        self._stdin_thread = threading.Thread(target=self._read_stdin, daemon=True)
-        self._stdin_thread.start()
-
-        self._timer = rospy.Timer(rospy.Duration(0.05), self._process_stdin)
-        rospy.loginfo("ROS1 bridge ready")
-
-    def _read_stdin(self):
-        for line in sys.stdin:
-            line = line.strip()
-            if not line:
-                continue
-            self._stdin_queue.put(line)
-
-    def _process_stdin(self, event):
+    def _poll_file(self, event):
         try:
-            while True:
-                line = self._stdin_queue.get_nowait()
-                self._handle_input(line)
-        except Empty:
-            pass
+            if not os.path.exists(self.CMD_PATH):
+                return
+            size = os.path.getsize(self.CMD_PATH)
+            if size < self._last_pos:
+                self._last_pos = 0
+            with open(self.CMD_PATH, "r") as command_file:
+                command_file.seek(self._last_pos)
+                for line in command_file:
+                    line = line.strip()
+                    if line:
+                        self._handle_input(line)
+                self._last_pos = command_file.tell()
+        except Exception as error:
+            rospy.logerr(f"bridge poll error: {error}")
 
     def _handle_input(self, line):
         try:

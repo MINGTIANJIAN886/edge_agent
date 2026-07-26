@@ -8,7 +8,7 @@
 BROKER="ca15b49bc8b442638f0cade1e45585ce.s1.eu.hivemq.cloud"
 PORT=8883
 USER="liyankun"
-PASS="liyankun152455A"
+PASS="${MQTT_PASS:?export MQTT_PASS first}"
 ```
 
 ## 下载文件
@@ -17,10 +17,10 @@ PASS="liyankun152455A"
 mosquitto_pub -h "$BROKER" -p $PORT --cafile /etc/ssl/certs/ca-certificates.crt \
   -u "$USER" -P "$PASS" \
   -t "edge/pi-001/download" \
-  -m '{"url":"https://example.com/file.bin","dest_dir":"/home/pi/downloads","dest_name":"file.bin"}'
+  -m '{"url":"https://example.com/file.bin","dest_dir":"models","dest_name":"file.bin"}'
 ```
 
-结果返回到 `edge/pi-001/download/result`。
+文件只能写入配置的 `download_dir` 及其子目录，结果返回到 `edge/pi-001/download/result`。
 
 ## 执行命令
 
@@ -87,7 +87,6 @@ mosquitto_sub -h "$BROKER" -p $PORT --cafile /etc/ssl/certs/ca-certificates.crt 
 | `ros_topic_echo` | 订阅话题返回最新消息 |
 | `ros_service_call` | 调用 ROS 服务 |
 | `ros_param_get` / `ros_param_set` | ROS 参数读写 |
-| `bridge_start` / `bridge_stop` / `bridge_status` | 桥接生命周期管理 |
 | `car_cmd_vel` | 小车速度指令 |
 | `car_emergency_stop` | 急停 |
 
