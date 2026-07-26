@@ -232,9 +232,10 @@ if [ "${INSTALL_BRIDGE}" = true ]; then
     echo "       WARNING: download failed, bridge will not work"
   fi
 
-  curl -fsSL -o /opt/agent/bridge_ros1.py \
-    "https://raw.githubusercontent.com/${REPO}/main/scripts/bridge_ros1.py" 2>/dev/null && \
-    chmod +x /opt/agent/bridge_ros1.py || true
+  if curl -fsSL -o /opt/agent/bridge_ros1.py \
+    "https://raw.githubusercontent.com/${REPO}/main/scripts/bridge_ros1.py" 2>/dev/null; then
+    chmod +x /opt/agent/bridge_ros1.py
+  fi
 
   if ! curl -fsSL -o "${BRIDGE_RUNNER}" \
     "https://raw.githubusercontent.com/${REPO}/main/scripts/run_bridge.sh"; then
