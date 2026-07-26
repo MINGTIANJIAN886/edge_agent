@@ -4,10 +4,17 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 )
 
 func Detect() Version {
 	distro := os.Getenv("ROS_DISTRO")
+	if distro == "" {
+		runtimeCfg := configuredRuntime()
+		if runtimeCfg.ROSSetup != "" {
+			distro = filepath.Base(filepath.Dir(runtimeCfg.ROSSetup))
+		}
+	}
 	switch distro {
 	case "noetic", "melodic", "kinetic", "indigo":
 		log.Printf("ROS detection: ROS1 (distro=%s)", distro)

@@ -14,18 +14,20 @@ import (
 )
 
 type Status struct {
-	DeviceID  string `json:"device_id"`
-	Timestamp int64  `json:"timestamp"`
-	Hostname  string `json:"hostname"`
-	Uptime    string `json:"uptime"`
-	OS        string `json:"os"`
-	Arch      string `json:"arch"`
-	GoVersion string `json:"go_version"`
-	Kernel    string `json:"kernel"`
-	CPU       string `json:"cpu"`
-	Load      string `json:"load"`
-	Memory    string `json:"memory"`
-	Disk      string `json:"disk"`
+	DeviceID      string `json:"device_id"`
+	DeviceProfile string `json:"device_profile"`
+	ROSSetup      string `json:"ros_setup,omitempty"`
+	Timestamp     int64  `json:"timestamp"`
+	Hostname      string `json:"hostname"`
+	Uptime        string `json:"uptime"`
+	OS            string `json:"os"`
+	Arch          string `json:"arch"`
+	GoVersion     string `json:"go_version"`
+	Kernel        string `json:"kernel"`
+	CPU           string `json:"cpu"`
+	Load          string `json:"load"`
+	Memory        string `json:"memory"`
+	Disk          string `json:"disk"`
 }
 
 var startTime = time.Now()
@@ -38,25 +40,27 @@ func shell(cmd string) string {
 	return strings.TrimSpace(string(out))
 }
 
-func collectStatus(deviceID string) Status {
+func collectStatus(deviceID, deviceProfile, rosSetup string) Status {
 	hostname, _ := os.Hostname()
 	return Status{
-		DeviceID:  deviceID,
-		Timestamp: time.Now().Unix(),
-		Hostname:  hostname,
-		Uptime:    fmt.Sprintf("%v", time.Since(startTime).Round(time.Second)),
-		OS:        runtime.GOOS,
-		Arch:      runtime.GOARCH,
-		GoVersion: runtime.Version(),
-		Kernel:    shell("uname -r"),
-		CPU:       shell("nproc 2>/dev/null || echo 1"),
-		Load:      shell("cat /proc/loadavg | awk '{print \"1m=\"$1\" 5m=\"$2\" 15m=\"$3}'"),
-		Memory:    shell("free -h | awk 'NR==2{print \"total=\"$2\" used=\"$3\" free=\"$4}'"),
-		Disk:      shell("df -h / | awk 'NR==2{print \"total=\"$2\" used=\"$3\" avail=\"$4\" usage=\"$5}'"),
+		DeviceID:      deviceID,
+		DeviceProfile: deviceProfile,
+		ROSSetup:      rosSetup,
+		Timestamp:     time.Now().Unix(),
+		Hostname:      hostname,
+		Uptime:        fmt.Sprintf("%v", time.Since(startTime).Round(time.Second)),
+		OS:            runtime.GOOS,
+		Arch:          runtime.GOARCH,
+		GoVersion:     runtime.Version(),
+		Kernel:        shell("uname -r"),
+		CPU:           shell("nproc 2>/dev/null || echo 1"),
+		Load:          shell("cat /proc/loadavg | awk '{print \"1m=\"$1\" 5m=\"$2\" 15m=\"$3}'"),
+		Memory:        shell("free -h | awk 'NR==2{print \"total=\"$2\" used=\"$3\" free=\"$4}'"),
+		Disk:          shell("df -h / | awk 'NR==2{print \"total=\"$2\" used=\"$3\" avail=\"$4\" usage=\"$5}'"),
 	}
 }
 
-func Start(client mqtt.Client, deviceID string, interval int, topic string) {
+func Start(client mqtt.Client, deviceID, deviceProfile, rosSetup string, interval int, topic string) {
 	if interval <= 0 {
 		interval = 30
 	}
@@ -64,7 +68,7 @@ func Start(client mqtt.Client, deviceID string, interval int, topic string) {
 	defer ticker.Stop()
 
 	for range ticker.C {
-		status := collectStatus(deviceID)
+		status := collectStatus(deviceID, deviceProfile, rosSetup)
 		data, err := json.Marshal(status)
 		if err != nil {
 			log.Printf("heartbeat marshal error: %v", err)

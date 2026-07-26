@@ -1,0 +1,68 @@
+schema_version: 1
+device_id: edge-001
+device_profile: auto
+config_dir: /etc/agent/config.d
+download_dir: /tmp/agent/downloads
+heartbeat_interval: 30
+log_dir: /var/log/agent
+
+runtime:
+  command_shell: /bin/bash
+  ros_setup: auto
+  workspace_setup: ""
+
+mqtt:
+  broker: mqtt.example.com
+  port: 8883
+  client_id: ""
+  username: edge-agent
+  password: <set-on-device>
+  topic: {}
+
+ota:
+  server_url: https://ota.example.com
+  version_path: version.json
+  check_interval: 300
+  current_version: ""
+  model_file: /opt/agent/models/model.ncnn.bin
+  model_dir: /opt/agent/models
+  current_symlink: /opt/agent/models/current
+  backup_count: 3
+  inference_restart_cmd: ""
+
+cert_api: ""
+cert:
+  cert_file: ""
+  key_file: ""
+  ca_file: /etc/ssl/certs/ca-certificates.crt
+  auto_enroll: false
+  token: ""
+
+auth:
+  method: password
+  token: ""
+  token_exchange: false
+
+inference:
+  service_url: http://localhost:8080
+  timeout: 30
+
+ocr:
+  enabled: false
+  python_bin: /opt/agent/ocr_env/bin/python3
+  script_path: /opt/agent/edge_ocr.py
+  interval: 30
+  conf_threshold: 0.5
+  command_topic: ""
+  result_topic: ""
+
+ros:
+  enabled: false
+  bridge_script_ros1: /opt/agent/bridge_ros1.py
+  bridge_script_ros2: /opt/agent/bridge_ros2.py
+  bridge_python: python3
+  car_max_linear_speed: 2.0
+  car_max_angular_speed: 3.14
+  safety_watchdog_timeout: 5
+  cmd_vel_topic: /cmd_vel
+  bridge_result_topic: ""

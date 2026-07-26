@@ -1,0 +1,10 @@
+device_id: jetson-orin-01
+device_profile: jetson-r36
+
+runtime:
+  ros_setup: /opt/ros/humble/setup.bash
+  workspace_setup: /home/jetson/ros2_ws/install/setup.bash
+
+ros:
+  enabled: true
+  cmd_vel_topic: /cmd_vel

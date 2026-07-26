@@ -4,7 +4,12 @@ set -eo pipefail
 BRIDGE_ROS1="${BRIDGE_ROS1:-/opt/agent/bridge_ros1.py}"
 BRIDGE_ROS2="${BRIDGE_ROS2:-/opt/agent/bridge_ros2.py}"
 
-if [ -n "${ROS_DISTRO:-}" ] && [ -f "/opt/ros/${ROS_DISTRO}/setup.bash" ]; then
+if [ -n "${EDGE_AGENT_ROS_SETUP:-}" ] && \
+  [ "${EDGE_AGENT_ROS_SETUP}" != "auto" ] && \
+  [ "${EDGE_AGENT_ROS_SETUP}" != "none" ] && \
+  [ -f "${EDGE_AGENT_ROS_SETUP}" ]; then
+  ROS_SETUP="${EDGE_AGENT_ROS_SETUP}"
+elif [ -n "${ROS_DISTRO:-}" ] && [ -f "/opt/ros/${ROS_DISTRO}/setup.bash" ]; then
   ROS_SETUP="/opt/ros/${ROS_DISTRO}/setup.bash"
 else
   ROS_SETUP=""
@@ -23,6 +28,11 @@ fi
 # ROS setup scripts are not guaranteed to support nounset.
 # shellcheck disable=SC1090
 source "${ROS_SETUP}"
+
+if [ -n "${EDGE_AGENT_WORKSPACE_SETUP:-}" ] && [ -f "${EDGE_AGENT_WORKSPACE_SETUP}" ]; then
+  # shellcheck disable=SC1090
+  source "${EDGE_AGENT_WORKSPACE_SETUP}"
+fi
 
 case "${ROS_DISTRO:-}" in
   kinetic|melodic|noetic)

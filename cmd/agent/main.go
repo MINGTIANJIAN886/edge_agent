@@ -40,6 +40,13 @@ func main() {
 
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
 	log.Printf("agent starting, device_id=%s", cfg.DeviceID)
+	log.Printf(
+		"configuration resolved: profile=%s config_dir=%s ros_setup=%s workspace_setup=%s",
+		cfg.DeviceProfile,
+		cfg.ConfigDir,
+		cfg.Runtime.ROSSetup,
+		cfg.Runtime.WorkspaceSetup,
+	)
 
 	certDir := filepath.Dir(cfg.Cert.CertFile)
 	if certDir == "." {
@@ -109,6 +116,7 @@ func main() {
 	opts.SetReconnectingHandler(func(_ mqtt.Client, _ *mqtt.ClientOptions) {
 		log.Println("MQTT reconnecting...")
 	})
+	ros.ConfigureRuntime(cfg.Runtime)
 	rosVer := ros.Detect()
 	log.Printf("ROS version: %s", rosVer)
 
@@ -130,7 +138,7 @@ func main() {
 	opts.SetOnConnectHandler(func(c mqtt.Client) {
 		log.Println("MQTT connected")
 		mcp.PublishTools(c, cfg.DeviceID, cfg.MQTT.Topic.MCPRegister, rosVer, bridgeMgr != nil)
-		remote.SubscribeCommands(c, cfg.DeviceID, cfg.MQTT.Topic.Command)
+		remote.SubscribeCommands(c, cfg.DeviceID, cfg.MQTT.Topic.Command, cfg.Runtime)
 		download.SubscribeDownloads(c, cfg.DeviceID, cfg.MQTT.Topic.Download, cfg.DownloadDir)
 		if ocrController != nil {
 			ocrController.SubscribeCommands()
@@ -168,7 +176,14 @@ func main() {
 	}
 
 	ota.InitRollbackState(cfg.OTA)
-	go heartbeat.Start(client, cfg.DeviceID, cfg.Heartbeat, cfg.MQTT.Topic.Heartbeat)
+	go heartbeat.Start(
+		client,
+		cfg.DeviceID,
+		cfg.DeviceProfile,
+		cfg.Runtime.ROSSetup,
+		cfg.Heartbeat,
+		cfg.MQTT.Topic.Heartbeat,
+	)
 	go ota.StartPeriodicCheck(cfg.OTA, client, cfg.DeviceID, cfg.MQTT.Topic.Result)
 	go mqttWatchdog(client)
 

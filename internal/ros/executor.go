@@ -1,12 +1,10 @@
 package ros
 
 import (
-	"bytes"
-	"context"
 	"fmt"
-	"os/exec"
 	"strings"
-	"time"
+
+	"github.com/MINGTIANJIAN886/edge_agent/internal/command"
 )
 
 func NodeList(ver Version) ([]NodeInfo, error) {
@@ -139,21 +137,14 @@ func ParamSet(ver Version, name, value string) error {
 }
 
 func runCLI(name string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, name, args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		if ctx.Err() != nil {
+	result := command.ExecuteArgs(name, args, 30, configuredRuntime())
+	if !result.Success {
+		if strings.Contains(result.Stderr, "command timed out") {
 			return "", fmt.Errorf("%s timed out", name)
 		}
-		return "", fmt.Errorf("%s: %w\n%s", name, err, strings.TrimSpace(stderr.String()))
+		return "", fmt.Errorf("%s failed (exit %d): %s", name, result.ExitCode, strings.TrimSpace(result.Stderr))
 	}
-	return stdout.String(), nil
+	return result.Stdout, nil
 }
 
 func toNodes(out string) []NodeInfo {

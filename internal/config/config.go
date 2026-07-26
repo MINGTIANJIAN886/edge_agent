@@ -5,24 +5,35 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
-	DeviceID    string    `yaml:"device_id"`
-	MQTT        MQTT      `yaml:"mqtt"`
-	CertAPI     string    `yaml:"cert_api"`
-	Cert        Cert      `yaml:"cert"`
-	Auth        Auth      `yaml:"auth"`
-	DownloadDir string    `yaml:"download_dir"`
-	Heartbeat   int       `yaml:"heartbeat_interval"`
-	LogDir      string    `yaml:"log_dir"`
-	OTA         OTA       `yaml:"ota"`
-	Inference   Inference `yaml:"inference"`
-	OCR         OCR       `yaml:"ocr"`
-	ROS         ROSConfig `yaml:"ros"`
+	SchemaVersion int       `yaml:"schema_version"`
+	DeviceID      string    `yaml:"device_id"`
+	DeviceProfile string    `yaml:"device_profile"`
+	ConfigDir     string    `yaml:"config_dir"`
+	Runtime       Runtime   `yaml:"runtime"`
+	MQTT          MQTT      `yaml:"mqtt"`
+	CertAPI       string    `yaml:"cert_api"`
+	Cert          Cert      `yaml:"cert"`
+	Auth          Auth      `yaml:"auth"`
+	DownloadDir   string    `yaml:"download_dir"`
+	Heartbeat     int       `yaml:"heartbeat_interval"`
+	LogDir        string    `yaml:"log_dir"`
+	OTA           OTA       `yaml:"ota"`
+	Inference     Inference `yaml:"inference"`
+	OCR           OCR       `yaml:"ocr"`
+	ROS           ROSConfig `yaml:"ros"`
+}
+
+type Runtime struct {
+	CommandShell   string `yaml:"command_shell"`
+	ROSSetup       string `yaml:"ros_setup"`
+	WorkspaceSetup string `yaml:"workspace_setup"`
 }
 
 type MQTT struct {
@@ -99,16 +110,32 @@ type ROSConfig struct {
 }
 
 func Load(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
+	cfg := &Config{}
+	if err := decodeFile(path, cfg); err != nil {
+		return nil, err
+	}
+
+	configDir := cfg.ConfigDir
+	if configDir == "" {
+		configDir = filepath.Join(filepath.Dir(path), "config.d")
+	} else if !filepath.IsAbs(configDir) {
+		configDir = filepath.Join(filepath.Dir(path), configDir)
+	}
+	configDir = filepath.Clean(configDir)
+	cfg.ConfigDir = configDir
+
+	overlays, err := overlayFiles(configDir)
 	if err != nil {
 		return nil, err
 	}
-	cfg := &Config{}
-	decoder := yaml.NewDecoder(bytes.NewReader(data))
-	decoder.KnownFields(true)
-	if err := decoder.Decode(cfg); err != nil {
-		return nil, err
+	for _, overlay := range overlays {
+		if err := decodeFile(overlay, cfg); err != nil {
+			return nil, fmt.Errorf("load overlay %s: %w", overlay, err)
+		}
 	}
+	cfg.ConfigDir = configDir
+
+	cfg.resolveRuntime()
 	cfg.setDefaults()
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -116,7 +143,45 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
+func decodeFile(path string, cfg *Config) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(cfg); err != nil {
+		return err
+	}
+	return nil
+}
+
+func overlayFiles(configDir string) ([]string, error) {
+	info, err := os.Stat(configDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("stat config_dir: %w", err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("config_dir %s is not a directory", configDir)
+	}
+
+	var files []string
+	for _, pattern := range []string{"*.yaml", "*.yml"} {
+		matches, err := filepath.Glob(filepath.Join(configDir, pattern))
+		if err != nil {
+			return nil, fmt.Errorf("list config overlays: %w", err)
+		}
+		files = append(files, matches...)
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
 func (c *Config) Save(path string) error {
+	c.resolveRuntime()
 	c.setDefaults()
 	if err := c.Validate(); err != nil {
 		return err
@@ -140,6 +205,9 @@ func (c *Config) Save(path string) error {
 }
 
 func (c *Config) setDefaults() {
+	if c.SchemaVersion == 0 {
+		c.SchemaVersion = 1
+	}
 	if c.DownloadDir == "" {
 		c.DownloadDir = "/tmp/agent/downloads"
 	}
@@ -175,6 +243,15 @@ func (c *Config) setDefaults() {
 		if c.MQTT.Topic.MCPCall == "" {
 			c.MQTT.Topic.MCPCall = prefix + "/mcp/call"
 		}
+		if c.OCR.CommandTopic == "" {
+			c.OCR.CommandTopic = prefix + "/ocr/command"
+		}
+		if c.OCR.ResultTopic == "" {
+			c.OCR.ResultTopic = prefix + "/ocr/result"
+		}
+		if c.ROS.BridgeResultTopic == "" {
+			c.ROS.BridgeResultTopic = prefix + "/bridge/result"
+		}
 	}
 	if c.Auth.Method == "" {
 		c.Auth.Method = "password"
@@ -192,13 +269,27 @@ func (c *Config) setDefaults() {
 		c.ROS.SafetyWatchdog = 5
 	}
 	if c.OCR.PythonBin == "" {
-		c.OCR.PythonBin = "python3"
+		c.OCR.PythonBin = "/opt/agent/ocr_env/bin/python3"
+	}
+	if c.Runtime.CommandShell == "" {
+		c.Runtime.CommandShell = "/bin/bash"
 	}
 }
 
 func (c *Config) Validate() error {
+	if c.SchemaVersion != 1 {
+		return fmt.Errorf("unsupported schema_version %d", c.SchemaVersion)
+	}
 	if strings.TrimSpace(c.DeviceID) == "" {
 		return fmt.Errorf("device_id is required")
+	}
+	switch c.DeviceProfile {
+	case ProfileGenericLinux, ProfileRaspberryPi, ProfileJetson, ProfileJetsonR32, ProfileJetsonR35, ProfileJetsonR36:
+	default:
+		return fmt.Errorf("unsupported device_profile %q", c.DeviceProfile)
+	}
+	if !filepath.IsAbs(c.Runtime.CommandShell) {
+		return fmt.Errorf("runtime.command_shell must be an absolute path")
 	}
 	if strings.TrimSpace(c.MQTT.Broker) == "" {
 		return fmt.Errorf("mqtt.broker is required")

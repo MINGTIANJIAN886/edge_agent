@@ -15,6 +15,10 @@ ARM 设备加速：
 sudo apt install -y libhdf5-dev libatlas-base-dev
 ```
 
+所有平台统一使用 `/opt/agent/ocr_env`，但 Raspberry Pi、Jetson R32 和
+Jetson JetPack 6 应分别在设备本机创建虚拟环境并安装与其 Python/CUDA 版本匹配的
+依赖，不要直接复制另一台设备的虚拟环境目录。
+
 ## 部署脚本
 
 ```bash

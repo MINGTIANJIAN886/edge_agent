@@ -1,0 +1,9 @@
+device_id: raspberry-pi-01
+device_profile: raspberry-pi
+
+runtime:
+  workspace_setup: /home/pi/robot_ws/install/setup.bash
+
+ros:
+  enabled: true
+  cmd_vel_topic: /cmd_vel

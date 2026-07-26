@@ -1,5 +1,10 @@
 # ROS1/ROS2 小车控制
 
+Agent、远程 Shell 和 bridge 共用统一 ROS 环境。跨设备配置方式见
+[统一配置说明](README-CONFIG.md)：公共配置放在 `/etc/agent/config.yaml`，
+设备的 ROS 发行版、工作空间和 `/cmd_vel` 差异放在
+`/etc/agent/config.d/*.yaml`。
+
 三层架构实现与任意 ROS 版本通信：
 
 | 层级 | 方式 | 延迟 |

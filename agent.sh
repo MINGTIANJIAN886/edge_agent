@@ -17,6 +17,7 @@ SERVICE_DIR="/etc/systemd/system"
 
 AGENT_BIN="${INSTALL_DIR}/agent"
 CONFIG_FILE="${CONFIG_DIR}/config.yaml"
+CONFIG_OVERLAY_DIR="${CONFIG_OVERLAY_DIR:-${CONFIG_DIR}/config.d}"
 SERVICE_FILE="${SERVICE_DIR}/agent.service"
 BRIDGE_RUNNER="/opt/agent/run_bridge.sh"
 
@@ -30,6 +31,7 @@ esac
 
 # 默认参数（可通过环境变量覆盖）
 DEVICE_ID="${DEVICE_ID:-pi-001}"
+DEVICE_PROFILE="${DEVICE_PROFILE:-auto}"
 MQTT_BROKER="${MQTT_BROKER:-ca15b49bc8b442638f0cade1e45585ce.s1.eu.hivemq.cloud}"
 MQTT_PORT="${MQTT_PORT:-8883}"
 MQTT_USER="${MQTT_USER:-liyankun}"
@@ -40,15 +42,20 @@ ROS_BRIDGE_SCRIPT2="${ROS_BRIDGE2:-/opt/agent/bridge_ros2.py}"
 ROS_MAX_LINEAR="${ROS_MAX_LINEAR:-2.0}"
 ROS_MAX_ANGULAR="${ROS_MAX_ANGULAR:-3.14}"
 ROS_WATCHDOG="${ROS_WATCHDOG:-5}"
+ROS_SETUP="${ROS_SETUP:-auto}"
+ROS_WORKSPACE_SETUP="${ROS_WORKSPACE_SETUP:-}"
+ROS_CMD_VEL_TOPIC="${ROS_CMD_VEL_TOPIC:-/cmd_vel}"
 OCR_ENABLED="${OCR_ENABLED:-false}"
 OCR_INTERVAL="${OCR_INTERVAL:-30}"
 OCR_CONF_THRESHOLD="${OCR_CONF_THRESHOLD:-0.5}"
 INSTALL_BRIDGE="${ROS_ENABLED:-false}"
+FORCE_CONFIG=false
 
 for arg in "$@"; do
   case "$arg" in
     --bridge) INSTALL_BRIDGE=true ;;
-    --help) echo "Usage: $0 [--bridge] [DEVICE_ID]"; exit 0 ;;
+    --force-config) FORCE_CONFIG=true ;;
+    --help) echo "Usage: $0 [--bridge] [--force-config] [DEVICE_ID]"; exit 0 ;;
   esac
 done
 
@@ -56,7 +63,7 @@ if [ $# -gt 0 ] && [[ "$1" != --* ]]; then
   DEVICE_ID="$1"
 fi
 
-if [ -z "${MQTT_PASS}" ]; then
+if { [ ! -f "${CONFIG_FILE}" ] || [ "${FORCE_CONFIG}" = true ]; } && [ -z "${MQTT_PASS}" ]; then
   echo "ERROR: MQTT_PASS must be provided through the environment." >&2
   echo "Example:" >&2
   echo "  curl -fsSL https://raw.githubusercontent.com/${REPO}/main/agent.sh | sudo env DEVICE_ID=jetson-01 MQTT_PASS='<password>' bash" >&2
@@ -65,6 +72,7 @@ fi
 
 echo "=== Edge Agent Installer ==="
 echo "Device: ${DEVICE_ID} | Arch: ${ARCH}"
+echo "Profile: ${DEVICE_PROFILE}"
 echo "Broker: ${MQTT_BROKER}:${MQTT_PORT}"
 echo "OTA:    ${OTA_SERVER}"
 echo "Bridge: ${INSTALL_BRIDGE}"
@@ -72,7 +80,7 @@ echo ""
 
 # [1/5] 创建目录
 echo "[1/5] Creating directories..."
-mkdir -p "${INSTALL_DIR}" "${CONFIG_DIR}" "${LOG_DIR}" "${DOWNLOAD_DIR}"
+mkdir -p "${INSTALL_DIR}" "${CONFIG_DIR}" "${CONFIG_OVERLAY_DIR}" "${LOG_DIR}" "${DOWNLOAD_DIR}" /opt/agent/models
 
 # [2/5] 下载 agent 二进制
 if [ ! -f "${AGENT_BIN}" ]; then
@@ -113,12 +121,29 @@ else
 fi
 
 # [3/5] 生成配置
-echo "[3/5] Generating configuration..."
-cat > "${CONFIG_FILE}" << EOF
+if [ -f "${CONFIG_FILE}" ] && [ "${FORCE_CONFIG}" != true ]; then
+  echo "[3/5] Preserving existing configuration: ${CONFIG_FILE}"
+  chmod 0600 "${CONFIG_FILE}"
+else
+  echo "[3/5] Generating unified configuration..."
+  if [ -f "${CONFIG_FILE}" ]; then
+    CONFIG_BACKUP="${CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    cp -a "${CONFIG_FILE}" "${CONFIG_BACKUP}"
+    echo "  -> backup: ${CONFIG_BACKUP}"
+  fi
+  cat > "${CONFIG_FILE}" << EOF
+schema_version: 1
 device_id: "${DEVICE_ID}"
+device_profile: "${DEVICE_PROFILE}"
+config_dir: "${CONFIG_OVERLAY_DIR}"
 download_dir: "${DOWNLOAD_DIR}"
 heartbeat_interval: 30
 log_dir: "${LOG_DIR}"
+
+runtime:
+  command_shell: "/bin/bash"
+  ros_setup: "${ROS_SETUP}"
+  workspace_setup: "${ROS_WORKSPACE_SETUP}"
 
 mqtt:
   broker: "${MQTT_BROKER}"
@@ -140,9 +165,9 @@ ota:
   version_path: "version.json"
   check_interval: 300
   current_version: "5.0"
-  model_file: "/home/liyankun/models/model.ncnn.bin"
-  model_dir: "/home/liyankun/models"
-  current_symlink: "/home/liyankun/models/current"
+  model_file: "/opt/agent/models/model.ncnn.bin"
+  model_dir: "/opt/agent/models"
+  current_symlink: "/opt/agent/models/current"
   backup_count: 3
   inference_restart_cmd: ""
 
@@ -180,11 +205,12 @@ ros:
   car_max_linear_speed: ${ROS_MAX_LINEAR}
   car_max_angular_speed: ${ROS_MAX_ANGULAR}
   safety_watchdog_timeout: ${ROS_WATCHDOG}
-  cmd_vel_topic: "/cmd_vel"
+  cmd_vel_topic: "${ROS_CMD_VEL_TOPIC}"
   bridge_result_topic: "edge/${DEVICE_ID}/bridge/result"
 EOF
-chmod 0600 "${CONFIG_FILE}"
-echo "  -> ${CONFIG_FILE}"
+  chmod 0600 "${CONFIG_FILE}"
+  echo "  -> ${CONFIG_FILE}"
+fi
 
 # [4/5] 安装 systemd 服务
 echo "[4/5] Installing systemd services..."
@@ -252,6 +278,8 @@ After=network.target
 [Service]
 Type=simple
 Environment=ROS_HOME=/tmp/ros
+Environment="EDGE_AGENT_ROS_SETUP=${ROS_SETUP}"
+Environment="EDGE_AGENT_WORKSPACE_SETUP=${ROS_WORKSPACE_SETUP}"
 ExecStart=${BRIDGE_RUNNER}
 Restart=always
 RestartSec=3

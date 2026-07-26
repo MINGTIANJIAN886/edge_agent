@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,6 +15,7 @@ import (
 	"time"
 
 	"github.com/MINGTIANJIAN886/edge_agent/internal/bridge"
+	"github.com/MINGTIANJIAN886/edge_agent/internal/command"
 	"github.com/MINGTIANJIAN886/edge_agent/internal/config"
 	"github.com/MINGTIANJIAN886/edge_agent/internal/download"
 	"github.com/MINGTIANJIAN886/edge_agent/internal/ocr"
@@ -334,9 +334,9 @@ func SubscribeCalls(
 
 		switch req.Method {
 		case "device_info":
-			resp = handleDeviceInfo()
+			resp = handleDeviceInfo(cfg)
 		case "execute_command":
-			resp = handleExecuteCommand(req)
+			resp = handleExecuteCommand(cfg, req)
 		case "download_file":
 			resp = handleDownloadFile(cfg, client, deviceID, req)
 		case "restart_service":
@@ -447,39 +447,44 @@ func shell(cmd string) string {
 	return strings.TrimSpace(string(out))
 }
 
-func handleDeviceInfo() MCPCallResponse {
+func handleDeviceInfo(cfg *config.Config) MCPCallResponse {
 	hostname, _ := os.Hostname()
 	info := map[string]interface{}{
-		"hostname":   hostname,
-		"platform":   runtime.GOOS + "/" + runtime.GOARCH,
-		"go_version": runtime.Version(),
-		"cpu":        shell("nproc || echo 1"),
-		"memory":     shell("free -h | awk 'NR==2{print \"total=\"$2\" used=\"$3\" free=\"$4}'"),
-		"disk":       shell("df -h / | awk 'NR==2{print \"total=\"$2\" used=\"$3\" avail=\"$4\" usage=\"$5}'"),
-		"uptime":     shell("uptime -p"),
-		"load":       shell("cat /proc/loadavg | awk '{print \"1m=\"$1\" 5m=\"$2\" 15m=\"$3}'"),
-		"kernel":     shell("uname -r"),
-		"timestamp":  time.Now().Unix(),
+		"hostname":        hostname,
+		"platform":        runtime.GOOS + "/" + runtime.GOARCH,
+		"device_profile":  cfg.DeviceProfile,
+		"ros_setup":       cfg.Runtime.ROSSetup,
+		"workspace_setup": cfg.Runtime.WorkspaceSetup,
+		"go_version":      runtime.Version(),
+		"cpu":             shell("nproc || echo 1"),
+		"memory":          shell("free -h | awk 'NR==2{print \"total=\"$2\" used=\"$3\" free=\"$4}'"),
+		"disk":            shell("df -h / | awk 'NR==2{print \"total=\"$2\" used=\"$3\" avail=\"$4\" usage=\"$5}'"),
+		"uptime":          shell("uptime -p"),
+		"load":            shell("cat /proc/loadavg | awk '{print \"1m=\"$1\" 5m=\"$2\" 15m=\"$3}'"),
+		"kernel":          shell("uname -r"),
+		"timestamp":       time.Now().Unix(),
 	}
 	return MCPCallResponse{Success: true, Result: info}
 }
 
-func handleExecuteCommand(req MCPCallRequest) MCPCallResponse {
-	cmd, _ := req.Params["command"].(string)
-	if cmd == "" {
+func handleExecuteCommand(cfg *config.Config, req MCPCallRequest) MCPCallResponse {
+	commandText, _ := req.Params["command"].(string)
+	if commandText == "" {
 		return MCPCallResponse{Success: false, Error: "missing command"}
 	}
 	timeout := 30
 	if t, ok := req.Params["timeout"].(float64); ok {
 		timeout = int(t)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "sh", "-c", cmd).Output()
-	if err != nil {
-		return MCPCallResponse{Success: false, Error: err.Error(), Result: string(out)}
+	result := command.Execute(commandText, timeout, cfg.Runtime)
+	if !result.Success {
+		return MCPCallResponse{
+			Success: false,
+			Error:   result.Stderr,
+			Result:  result.Stdout,
+		}
 	}
-	return MCPCallResponse{Success: true, Result: string(out)}
+	return MCPCallResponse{Success: true, Result: result.Stdout}
 }
 
 func handleDownloadFile(cfg *config.Config, client mqtt.Client, deviceID string, req MCPCallRequest) MCPCallResponse {
