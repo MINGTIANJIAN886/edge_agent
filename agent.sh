@@ -290,29 +290,95 @@ if [ "${INSTALL_BRIDGE}" = true ]; then
     chmod +x "${SCRIPT_DIR}/bridge_ros1.py" || \
     echo "       WARNING: bridge_ros1.py download failed"
 
-  # Determine which bridge to use
-  case "${ROS_VERSION}" in
+  # Unified ROS detection: determine both bridge script and source command together
+  DETECTED_ROS_VERSION=""
+  DETECTED_ROS_DISTRO=""
+  DETECTED_ROS_DIR=""
+
+  # Priority 1: explicit env vars
+  if [ -n "${ROS_VERSION}" ] && [ "${ROS_VERSION}" != "auto" ]; then
+    DETECTED_ROS_VERSION="${ROS_VERSION}"
+    if [ -n "${ROS_DISTRO}" ]; then
+      DETECTED_ROS_DISTRO="${ROS_DISTRO}"
+      DETECTED_ROS_DIR="/opt/ros/${ROS_DISTRO}"
+    fi
+  fi
+
+  # Priority 2: detect via rosversion (ROS1) or ros2 command
+  if [ -z "${DETECTED_ROS_VERSION}" ]; then
+    if command -v rosversion &>/dev/null; then
+      DETECTED_ROS_DISTRO="$(rosversion -d 2>/dev/null || true)"
+      if [ -n "${DETECTED_ROS_DISTRO}" ]; then
+        DETECTED_ROS_VERSION="1"
+        DETECTED_ROS_DIR="/opt/ros/${DETECTED_ROS_DISTRO}"
+      fi
+    fi
+  fi
+  if [ -z "${DETECTED_ROS_VERSION}" ] && command -v ros2 &>/dev/null; then
+    DETECTED_ROS_VERSION="2"
+    # Try to extract distro from ros2 --version
+    ROS2_DISTRO="$(ros2 --version 2>/dev/null | head -1 | sed 's/.* \(.*\)/\1/')"
+    if [ -n "${ROS2_DISTRO}" ] && [ -d "/opt/ros/${ROS2_DISTRO}" ]; then
+      DETECTED_ROS_DISTRO="${ROS2_DISTRO}"
+      DETECTED_ROS_DIR="/opt/ros/${ROS2_DISTRO}"
+    fi
+  fi
+
+  # Priority 3: scan /opt/ros/ directories
+  if [ -z "${DETECTED_ROS_VERSION}" ] && [ -d /opt/ros ]; then
+    ROS_DIRS=()
+    for dir_entry in /opt/ros/*/; do
+      [ -d "${dir_entry}" ] && ROS_DIRS+=("${dir_entry%/}")
+    done
+    case ${#ROS_DIRS[@]} in
+      0)
+        ;;
+      1)
+        DETECTED_ROS_DIR="${ROS_DIRS[0]}"
+        DETECTED_ROS_DISTRO="$(basename "${ROS_DIRS[0]}")"
+        case "${DETECTED_ROS_DISTRO}" in
+          noetic|melodic|kinetic|indigo|lunar)
+            DETECTED_ROS_VERSION="1" ;;
+          humble|jazzy|rolling|iron|galactic|foxy|eloquent|dashing)
+            DETECTED_ROS_VERSION="2" ;;
+          *)
+            # Fallback: check setup.bash for ROS_VERSION hint
+            if grep -qi "ROS_VERSION=2" "${DETECTED_ROS_DIR}/setup.bash" 2>/dev/null; then
+              DETECTED_ROS_VERSION="2"
+            else
+              DETECTED_ROS_VERSION="1"
+            fi
+            ;;
+        esac
+        ;;
+      *)
+        echo "  -> WARNING: Multiple ROS installations found: ${ROS_DIRS[*]}"
+        echo "  -> Set ROS_VERSION=1 or ROS_VERSION=2 and ROS_DISTRO=<name> explicitly"
+        DETECTED_ROS_VERSION="2"
+        ;;
+    esac
+  fi
+
+  # Fallback if nothing detected
+  if [ -z "${DETECTED_ROS_VERSION}" ]; then
+    echo "  -> WARNING: No ROS installation detected, defaulting to ROS2 bridge"
+    DETECTED_ROS_VERSION="2"
+  fi
+
+  # Select bridge script from unified detection
+  case "${DETECTED_ROS_VERSION}" in
     1) ACTIVE_BRIDGE="${ROS_BRIDGE_SCRIPT1}" ;;
     2) ACTIVE_BRIDGE="${ROS_BRIDGE_SCRIPT2}" ;;
-    auto)
-      # Auto-detect: prefer ROS2, fallback to ROS1
-      if [ -d /opt/ros/humble ] || [ -d /opt/ros/jazzy ] || [ -d /opt/ros/rolling ]; then
-        ACTIVE_BRIDGE="${ROS_BRIDGE_SCRIPT2}"
-      elif [ -d /opt/ros/noetic ] || ls /opt/ros/ 2>/dev/null | grep -q "^ros"; then
-        ACTIVE_BRIDGE="${ROS_BRIDGE_SCRIPT1}"
-      else
-        echo "  -> WARNING: No ROS installation detected under /opt/ros"
-        ACTIVE_BRIDGE="${ROS_BRIDGE_SCRIPT2}"
-      fi
-      ;;
   esac
 
-  # Build source command for ROS environment
+  # Build source command from same detection result
   ROS_SOURCE_CMD=""
-  if [ -n "${ROS_DISTRO}" ]; then
-    ROS_SOURCE_CMD="source /opt/ros/${ROS_DISTRO}/setup.bash 2>/dev/null; "
+  if [ -n "${DETECTED_ROS_DIR}" ] && [ -f "${DETECTED_ROS_DIR}/setup.bash" ]; then
+    ROS_SOURCE_CMD="source ${DETECTED_ROS_DIR}/setup.bash 2>/dev/null; "
+  elif [ -n "${DETECTED_ROS_DISTRO}" ]; then
+    ROS_SOURCE_CMD="source /opt/ros/${DETECTED_ROS_DISTRO}/setup.bash 2>/dev/null; "
   else
-    ROS_SOURCE_CMD="VER=\$(ls /opt/ros/ 2>/dev/null | head -1); source /opt/ros/\$VER/setup.bash 2>/dev/null; "
+    ROS_SOURCE_CMD="echo 'WARNING: ROS environment not found, trying generic path'; "
   fi
 
   cat > "${SERVICE_DIR}/car_bridge.service" << EOF
