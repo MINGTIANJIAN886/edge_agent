@@ -5,8 +5,8 @@
 ## 安装依赖
 
 ```bash
-sudo python3 -m venv /opt/agent/ocr_env
-sudo /opt/agent/ocr_env/bin/pip install paddlepaddle paddleocr opencv-python
+sudo python3 -m venv /opt/edge-agent/ocr_env
+sudo /opt/edge-agent/ocr_env/bin/pip install paddlepaddle paddleocr opencv-python
 ```
 
 ARM 设备加速：
@@ -18,9 +18,9 @@ sudo apt install -y libhdf5-dev libatlas-base-dev
 ## 部署脚本
 
 ```bash
-sudo mkdir -p /opt/agent
-sudo curl -fsSL https://raw.githubusercontent.com/MINGTIANJIAN886/edge_agent/main/edge_ocr.py -o /opt/agent/edge_ocr.py && sudo chmod +x /opt/agent/edge_ocr.py
-sudo sed -i '1i#!/opt/agent/ocr_env/bin/python3' /opt/agent/edge_ocr.py
+sudo mkdir -p /opt/edge-agent
+sudo curl -fsSL https://raw.githubusercontent.com/MINGTIANJIAN886/edge_agent/main/edge_ocr.py -o /opt/edge-agent/edge_ocr.py && sudo chmod +x /opt/edge-agent/edge_ocr.py
+sudo sed -i '1i#!/opt/edge-agent/ocr_env/bin/python3' /opt/edge-agent/edge_ocr.py
 ```
 
 ## 配置
@@ -28,7 +28,7 @@ sudo sed -i '1i#!/opt/agent/ocr_env/bin/python3' /opt/agent/edge_ocr.py
 ```yaml
 ocr:
   enabled: true
-  script_path: "/opt/agent/edge_ocr.py"
+  script_path: "/opt/edge-agent/edge_ocr.py"
   interval: 30
   conf_threshold: 0.5
   command_topic: "edge/pi-001/ocr/command"
@@ -69,7 +69,7 @@ OCR_ENABLED=true OCR_INTERVAL=60 \
 ## 验证
 
 ```bash
-sudo journalctl -u agent -f
+sudo journalctl -u edge-agent -f
 
 mosquitto_pub -h "ca15b49bc8b442638f0cade1e45585ce.s1.eu.hivemq.cloud" \
   -p 8883 --cafile /etc/ssl/certs/ca-certificates.crt \

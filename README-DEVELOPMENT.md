@@ -17,7 +17,7 @@ make build-all       # 全部平台
 ## 运行
 
 ```bash
-./build/agent-amd64 -config /etc/agent/config.yaml
+./build/agent-amd64 -config /etc/edge-agent/config.yaml
 ```
 
 ## 发布
@@ -30,7 +30,7 @@ make release
 
 ```bash
 docker run -d --name edge-agent \
-  -v /etc/agent:/etc/agent \
+  -v /etc/edge-agent:/etc/edge-agent \
   --network host \
   ghcr.io/MINGTIANJIAN886/edge-agent:latest
 ```
@@ -38,8 +38,8 @@ docker run -d --name edge-agent \
 ## 系统管理
 
 ```bash
-sudo systemctl status agent
-sudo journalctl -u agent -f
+sudo systemctl status edge-agent
+sudo journalctl -u edge-agent -f
 sudo systemctl status car_bridge   # --bridge 模式
 ```
 

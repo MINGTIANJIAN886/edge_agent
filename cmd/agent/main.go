@@ -28,7 +28,7 @@ import (
 )
 
 func main() {
-	cfgPath := flag.String("config", "/etc/agent/config.yaml", "path to config file")
+	cfgPath := flag.String("config", "/etc/edge-agent/config.yaml", "path to config file")
 	enrollFlag := flag.Bool("enroll", false, "run certificate enrollment and exit")
 	flag.Parse()
 
@@ -42,7 +42,7 @@ func main() {
 
 	certDir := filepath.Dir(cfg.Cert.CertFile)
 	if certDir == "." {
-		certDir = "/etc/agent/certs"
+		certDir = "/etc/edge-agent/certs"
 	}
 
 	// Certificate auto-enrollment
@@ -131,7 +131,7 @@ func main() {
 		}
 		mcp.SubscribeCalls(c, cfg.DeviceID, cfg.MQTT.Topic.MCPCall, cfg.Inference.ServiceURL, cfg)
 		if bridgeMgr != nil {
-			subscribeBridgeCommands(c, cfg.DeviceID, cfg.MQTT.Topic, bridgeMgr, rosVer)
+			subscribeBridgeCommands(c, cfg.DeviceID, cfg.MQTT.Topic, bridgeMgr, rosVer, cfg.ROS)
 		}
 	})
 	if tlsConfig != nil {
@@ -166,9 +166,18 @@ func main() {
 	client.Disconnect(1000)
 }
 
-func subscribeBridgeCommands(client mqtt.Client, deviceID string, topics config.Topic, mgr *bridge.Manager, ver ros.Version) {
-	cmdVelTopic := strings.Replace(topics.Command, "/command", "/car/cmd_vel", 1)
+func subscribeBridgeCommands(client mqtt.Client, deviceID string, topics config.Topic, mgr *bridge.Manager, ver ros.Version, rosCfg config.ROSConfig) {
+	cmdVelTopic := rosCfg.CmdVelTopic
+	if cmdVelTopic == "" {
+		cmdVelTopic = strings.Replace(topics.Command, "/command", "/car/cmd_vel", 1)
+	}
 	emergencyTopic := strings.Replace(topics.Command, "/command", "/car/emergency_stop", 1)
+	resultTopic := rosCfg.BridgeResultTopic
+	if resultTopic == "" {
+		resultTopic = strings.Replace(topics.Command, "/command", "/bridge/result", 1)
+	}
+	maxLinear := rosCfg.MaxLinearSpeed
+	maxAngular := rosCfg.MaxAngularSpeed
 
 	msgType := map[ros.Version]string{
 		ros.ROS1: "geometry_msgs/Twist",
@@ -184,6 +193,19 @@ func subscribeBridgeCommands(client mqtt.Client, deviceID string, topics config.
 			log.Printf("cmd_vel parse error: %v", err)
 			return
 		}
+		// Apply speed limits
+		if maxLinear > 0 && req.LinearX > maxLinear {
+			req.LinearX = maxLinear
+		}
+		if maxLinear > 0 && req.LinearX < -maxLinear {
+			req.LinearX = -maxLinear
+		}
+		if maxAngular > 0 && req.AngularZ > maxAngular {
+			req.AngularZ = maxAngular
+		}
+		if maxAngular > 0 && req.AngularZ < -maxAngular {
+			req.AngularZ = -maxAngular
+		}
 		data, _ := json.Marshal(map[string]interface{}{
 			"linear":  map[string]float64{"x": req.LinearX, "y": 0, "z": 0},
 			"angular": map[string]float64{"x": 0, "y": 0, "z": req.AngularZ},
@@ -194,6 +216,15 @@ func subscribeBridgeCommands(client mqtt.Client, deviceID string, topics config.
 			MsgType: msgType,
 			Data:    data,
 		})
+		// Publish result back
+		if resultTopic != "" {
+			resultData, _ := json.Marshal(map[string]interface{}{
+				"linear_x":  req.LinearX,
+				"angular_z": req.AngularZ,
+				"status":    "ok",
+			})
+			client.Publish(resultTopic, 1, false, resultData)
+		}
 	}); token.WaitTimeout(5*time.Second) && token.Error() != nil {
 		log.Printf("subscribe cmd_vel error: %v", token.Error())
 	}
@@ -204,8 +235,41 @@ func subscribeBridgeCommands(client mqtt.Client, deviceID string, topics config.
 			"angular": map[string]float64{"x": 0, "y": 0, "z": 0},
 		})
 		mgr.Send(ros.BridgeInput{Cmd: "publish", Topic: "/cmd_vel", MsgType: msgType, Data: data})
+		if resultTopic != "" {
+			client.Publish(resultTopic, 1, false, []byte(`{"status":"emergency_stop"}`))
+		}
 	}); token.WaitTimeout(5*time.Second) && token.Error() != nil {
 		log.Printf("subscribe emergency_stop error: %v", token.Error())
+	}
+
+	// Safety watchdog: if no cmd_vel received within timeout, publish zero velocity
+	watchdogTimeout := rosCfg.SafetyWatchdog
+	if watchdogTimeout > 0 {
+		go func() {
+			ticker := time.NewTicker(time.Duration(watchdogTimeout) * time.Second)
+			defer ticker.Stop()
+			lastCmd := time.Now()
+			// Reset timer on each cmd_vel message via another subscription
+			watchdogTopic := cmdVelTopic
+			client.Subscribe(watchdogTopic, 0, func(_ mqtt.Client, _ mqtt.Message) {
+				lastCmd = time.Now()
+			})
+			for range ticker.C {
+				if time.Since(lastCmd) >= time.Duration(watchdogTimeout)*time.Second {
+					log.Printf("safety watchdog: no cmd_vel for %ds, stopping", watchdogTimeout)
+					data, _ := json.Marshal(map[string]interface{}{
+						"linear":  map[string]float64{"x": 0, "y": 0, "z": 0},
+						"angular": map[string]float64{"x": 0, "y": 0, "z": 0},
+					})
+					mgr.Send(ros.BridgeInput{
+						Cmd:     "publish",
+						Topic:   "/cmd_vel",
+						MsgType: msgType,
+						Data:    data,
+					})
+				}
+			}
+		}()
 	}
 }
 

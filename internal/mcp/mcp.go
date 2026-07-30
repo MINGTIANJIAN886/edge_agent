@@ -485,7 +485,7 @@ func handleDetect(inferenceURL string, req MCPCallRequest) MCPCallResponse {
 func handleRunOCR(cfg *config.Config, req MCPCallRequest) MCPCallResponse {
 	scriptPath := cfg.OCR.ScriptPath
 	if scriptPath == "" {
-		scriptPath = "/opt/agent/edge_ocr.py"
+		scriptPath = "/opt/edge-agent/edge_ocr.py"
 	}
 	confThreshold := cfg.OCR.ConfThreshold
 	if t, ok := req.Params["conf_threshold"].(float64); ok {

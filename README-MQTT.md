@@ -59,7 +59,7 @@ mosquitto_pub ... -t "edge/pi-001/mcp/call" \
 
 # 获取日志
 mosquitto_pub ... -t "edge/pi-001/mcp/call" \
-  -m '{"id":"log","method":"get_logs","params":{"unit":"agent","lines":50}}'
+  -m '{"id":"log","method":"get_logs","params":{"unit":"edge-agent","lines":50}}'
 ```
 
 ## 查看所有消息
@@ -94,5 +94,5 @@ mosquitto_sub -h "$BROKER" -p $PORT --cafile /etc/ssl/certs/ca-certificates.crt 
 ## 证书管理
 
 ```bash
-./agent -config /etc/agent/config.yaml -enroll
+edge-agent -config /etc/edge-agent/config.yaml -enroll
 ```

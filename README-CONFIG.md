@@ -1,19 +1,19 @@
 # 配置说明
 
-配置文件路径：`/etc/agent/config.yaml`（可通过 `-config` 参数修改）。
+配置文件路径：`/etc/edge-agent/config.yaml`（可通过 `-config` 参数修改）。
 
 ## 完整配置
 
 ```yaml
 device_id: "pi-001"
-download_dir: "/tmp/agent/downloads"
+download_dir: "/var/cache/edge-agent/downloads"
 heartbeat_interval: 30
-log_dir: "/var/log/agent"
+log_dir: "/var/log/edge-agent"
 
 mqtt:
   broker: "ca15b49bc8b442638f0cade1e45585ce.s1.eu.hivemq.cloud"
   port: 8883
-  client_id: "agent-pi-001"
+  client_id: "edge-agent-pi-001"
   username: "liyankun"
   password: "liyankun152455A"
   topic:
@@ -29,9 +29,9 @@ ota:
   server_url: "https://amplifier-badge-awoke.ngrok-free.dev"
   version_path: "version.json"
   check_interval: 300
-  model_file: "/home/pi/models/model.ncnn.bin"
-  model_dir: "/home/pi/models"
-  current_symlink: "/home/pi/models/current"
+  model_file: "/var/lib/edge-agent/models/model.ncnn.bin"
+  model_dir: "/var/lib/edge-agent/models"
+  current_symlink: "/var/lib/edge-agent/models/current"
   backup_count: 3
   inference_restart_cmd: "systemctl restart yolov8"
 
@@ -41,7 +41,7 @@ inference:
 
 ocr:
   enabled: false
-  script_path: "/opt/agent/edge_ocr.py"
+  script_path: "/opt/edge-agent/edge_ocr.py"
   interval: 30
   conf_threshold: 0.5
   command_topic: "edge/pi-001/ocr/command"
@@ -49,8 +49,8 @@ ocr:
 
 ros:
   enabled: false
-  bridge_script_ros1: "/opt/agent/bridge_ros1.py"
-  bridge_script_ros2: "/opt/agent/bridge_ros2.py"
+  bridge_script_ros1: "/opt/edge-agent/bridge_ros1.py"
+  bridge_script_ros2: "/opt/edge-agent/bridge_ros2.py"
   bridge_python: "python3"
   car_max_linear_speed: 2.0
   car_max_angular_speed: 3.14
@@ -63,8 +63,8 @@ auth:
   token: ""
 
 cert:
-  cert_file: "/etc/agent/certs/client.crt"
-  key_file: "/etc/agent/certs/client.key"
+  cert_file: "/etc/edge-agent/certs/client.crt"
+  key_file: "/etc/edge-agent/certs/client.key"
   ca_file: "/etc/ssl/certs/ca-certificates.crt"
 ```
 

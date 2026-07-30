@@ -52,44 +52,44 @@ ROS_MAX_LINEAR="${ROS_MAX_LINEAR:-2.0}"
 ROS_MAX_ANGULAR="${ROS_MAX_ANGULAR:-3.14}"
 ROS_WATCHDOG="${ROS_WATCHDOG:-5}"
 INSTALL_BRIDGE=false
+FORCE_CONFIG=false
+
+show_help() {
+  echo "Usage: $0 [--bridge] [--force-config] [DEVICE_ID]"
+  echo ""
+  echo "Options:"
+  echo "  --bridge         Install ROS bridge scripts and service"
+  echo "  --force-config   Force regenerate config.yaml even if it exists"
+  echo ""
+  echo "Environment variables:"
+  echo "  DEVICE_ID       Device identifier (default: pi-001)"
+  echo "  MQTT_BROKER     MQTT broker host"
+  echo "  MQTT_PORT       MQTT broker port (default: 8883)"
+  echo "  MQTT_USER       MQTT username"
+  echo "  MQTT_PASS       MQTT password"
+  echo "  OTA_SERVER      OTA update server URL"
+  echo "  MODEL_DIR       Model directory (default: /var/lib/edge-agent/models)"
+  echo "  INSTALL_DIR     Binary install directory (default: /usr/local/bin)"
+  echo "  CONFIG_DIR      Config directory (default: /etc/edge-agent)"
+  echo "  SCRIPT_DIR      Scripts directory (default: /opt/edge-agent)"
+  echo "  LOG_DIR         Log directory (default: /var/log/edge-agent)"
+  echo "  DOWNLOAD_DIR    Download cache (default: /var/cache/edge-agent/downloads)"
+  echo "  INFERENCE_URL   Inference service URL (default: http://127.0.0.1:8080)"
+  echo "  OCR_ENABLED     Enable OCR (default: false)"
+  echo "  ROS_MAX_LINEAR  Max linear speed (default: 2.0)"
+  echo "  ROS_MAX_ANGULAR Max angular speed (default: 3.14)"
+  echo "  ROS_WATCHDOG    Safety watchdog timeout (default: 5)"
+}
 
 for arg in "$@"; do
   case "$arg" in
     --bridge) INSTALL_BRIDGE=true ;;
     --force-config) FORCE_CONFIG=true ;;
-    --help)
-      echo "Usage: $0 [--bridge] [--force-config] [DEVICE_ID]"
-      echo ""
-      echo "Options:"
-      echo "  --bridge         Install ROS bridge scripts and service"
-      echo "  --force-config   Force regenerate config.yaml even if it exists"
-      echo ""
-      echo "Environment variables:"
-      echo "  DEVICE_ID       Device identifier (default: pi-001)"
-      echo "  MQTT_BROKER     MQTT broker host"
-      echo "  MQTT_PORT       MQTT broker port (default: 8883)"
-      echo "  MQTT_USER       MQTT username"
-      echo "  MQTT_PASS       MQTT password"
-      echo "  OTA_SERVER      OTA update server URL"
-      echo "  MODEL_DIR       Model directory (default: /var/lib/edge-agent/models)"
-      echo "  INSTALL_DIR     Binary install directory (default: /usr/local/bin)"
-      echo "  CONFIG_DIR      Config directory (default: /etc/edge-agent)"
-      echo "  SCRIPT_DIR      Scripts directory (default: /opt/edge-agent)"
-      echo "  LOG_DIR         Log directory (default: /var/log/edge-agent)"
-      echo "  DOWNLOAD_DIR    Download cache (default: /var/cache/edge-agent/downloads)"
-      echo "  INFERENCE_URL   Inference service URL (default: http://127.0.0.1:8080)"
-      echo "  OCR_ENABLED     Enable OCR (default: false)"
-      echo "  ROS_MAX_LINEAR  Max linear speed (default: 2.0)"
-      echo "  ROS_MAX_ANGULAR Max angular speed (default: 3.14)"
-      echo "  ROS_WATCHDOG    Safety watchdog timeout (default: 5)"
-      exit 0
-      ;;
+    --help) show_help; exit 0 ;;
+    --*) echo "Unknown option: $arg" >&2; exit 1 ;;
+    *) DEVICE_ID="$arg" ;;
   esac
 done
-
-if [ $# -gt 0 ] && [[ "$1" != --* ]]; then
-  DEVICE_ID="$1"
-fi
 
 echo "=== Edge Agent Installer ==="
 echo "Device: ${DEVICE_ID} | Arch: ${ARCH}"
@@ -186,8 +186,8 @@ ocr:
 
 ros:
   enabled: ${INSTALL_BRIDGE}
-  bridge_script_ros1: "${BRIDGE_SCRIPT1}"
-  bridge_script_ros2: "${BRIDGE_SCRIPT2}"
+  bridge_script_ros1: "${ROS_BRIDGE_SCRIPT1}"
+  bridge_script_ros2: "${ROS_BRIDGE_SCRIPT2}"
   bridge_python: "${ROS_PYTHON}"
   car_max_linear_speed: ${ROS_MAX_LINEAR}
   car_max_angular_speed: ${ROS_MAX_ANGULAR}
@@ -210,6 +210,25 @@ auth:
   token_exchange: false
 EOF
   echo "  -> ${CONFIG_FILE}"
+fi
+
+# Secure configuration file
+chown root:root "${CONFIG_FILE}" 2>/dev/null || true
+chmod 600 "${CONFIG_FILE}"
+
+# Migrate legacy agent.service → edge-agent.service
+if command -v systemctl &>/dev/null; then
+  if systemctl list-unit-files agent.service &>/dev/null 2>&1; then
+    echo "  -> Detected legacy agent.service, migrating..."
+    systemctl disable --now agent.service 2>/dev/null || true
+    rm -f "/etc/systemd/system/agent.service"
+    systemctl daemon-reload 2>/dev/null || true
+  fi
+  # Backup old config if new path doesn't exist yet
+  if [ -f /etc/agent/config.yaml ] && [ ! -f "${CONFIG_FILE}" ]; then
+    cp -a /etc/agent/config.yaml "${CONFIG_DIR}/config.yaml.legacy"
+    echo "  -> Backed up old config to ${CONFIG_DIR}/config.yaml.legacy"
+  fi
 fi
 
 # [4/5] 安装 systemd 服务
@@ -244,11 +263,24 @@ else
     echo "  -> PID: $!"
 fi
 
-# [5/5] 可选：部署 ROS 桥接脚本 + car_bridge.service
-if [ "${INSTALL_BRIDGE}" = true ]; then
-  echo "[5/5] Deploying ROS bridge scripts and service..."
-  mkdir -p "${SCRIPT_DIR}"
+# [5/5] 部署脚本 (OCR + ROS 桥接)
+echo "[5/5] Deploying scripts..."
+mkdir -p "${SCRIPT_DIR}"
 
+# OCR script (always download if OCR is enabled)
+if [ "${OCR_ENABLED}" = true ]; then
+  echo "  -> downloading edge_ocr.py..."
+  if curl -fsSL -o "${SCRIPT_DIR}/edge_ocr.py" \
+    "https://raw.githubusercontent.com/${REPO}/main/edge_ocr.py"; then
+    chmod +x "${SCRIPT_DIR}/edge_ocr.py"
+    echo "       ${SCRIPT_DIR}/edge_ocr.py"
+  else
+    echo "       WARNING: OCR script download failed"
+  fi
+fi
+
+# ROS bridge scripts and service
+if [ "${INSTALL_BRIDGE}" = true ]; then
   echo "  -> downloading bridge_ros2.py..."
   if curl -fsSL -o "${SCRIPT_DIR}/bridge_ros2.py" \
     "https://raw.githubusercontent.com/${REPO}/main/scripts/bridge_ros2.py"; then
@@ -261,11 +293,6 @@ if [ "${INSTALL_BRIDGE}" = true ]; then
   curl -fsSL -o "${SCRIPT_DIR}/bridge_ros1.py" \
     "https://raw.githubusercontent.com/${REPO}/main/scripts/bridge_ros1.py" 2>/dev/null && \
     chmod +x "${SCRIPT_DIR}/bridge_ros1.py" || true
-
-  echo "  -> downloading edge_ocr.py..."
-  curl -fsSL -o "${SCRIPT_DIR}/edge_ocr.py" \
-    "https://raw.githubusercontent.com/${REPO}/main/edge_ocr.py" 2>/dev/null && \
-    chmod +x "${SCRIPT_DIR}/edge_ocr.py" || true
 
   cat > "${SERVICE_DIR}/car_bridge.service" << EOF
 [Unit]
@@ -297,19 +324,18 @@ echo ""
 echo "=== Install Complete ==="
 echo "Binary: ${AGENT_BIN}"
 echo "Config: ${CONFIG_FILE}"
-echo "Logs:   journalctl -u edge-agent -f"
 echo ""
 echo "Commands:"
 echo "  sudo systemctl status edge-agent"
 echo "  journalctl -u edge-agent -f"
 echo ""
-echo "All paths conform to Linux FHS standard:"
-echo "  Binary:  /usr/local/bin/edge-agent"
-echo "  Config:  /etc/edge-agent/config.yaml"
-echo "  Data:    /var/lib/edge-agent/models"
-echo "  Scripts: /opt/edge-agent/"
-echo "  Logs:    /var/log/edge-agent/"
-echo "  Cache:   /var/cache/edge-agent/downloads"
+echo "Paths (overridable via env vars):"
+echo "  Binary:  ${AGENT_BIN}"
+echo "  Config:  ${CONFIG_FILE}"
+echo "  Data:    ${MODEL_DIR}"
+echo "  Scripts: ${SCRIPT_DIR}"
+echo "  Logs:    ${LOG_DIR}"
+echo "  Cache:   ${DOWNLOAD_DIR}"
 echo ""
 echo "To trigger OTA update:"
 echo "  mosquitto_pub ... -t edge/${DEVICE_ID}/mcp/call -m '{\"id\":\"o\",\"method\":\"check_update\",\"params\":{}}'"

@@ -13,9 +13,9 @@ Agent 运行时自动检测 ROS 版本，无需重新编译。
 ## 部署
 
 ```bash
-sudo mkdir -p /opt/agent
-sudo curl -fsSL https://raw.githubusercontent.com/MINGTIANJIAN886/edge_agent/main/scripts/bridge_ros2.py -o /opt/agent/bridge_ros2.py
-sudo curl -fsSL https://raw.githubusercontent.com/MINGTIANJIAN886/edge_agent/main/scripts/bridge_ros1.py -o /opt/agent/bridge_ros1.py
+sudo mkdir -p /opt/edge-agent
+sudo curl -fsSL https://raw.githubusercontent.com/MINGTIANJIAN886/edge_agent/main/scripts/bridge_ros2.py -o /opt/edge-agent/bridge_ros2.py
+sudo curl -fsSL https://raw.githubusercontent.com/MINGTIANJIAN886/edge_agent/main/scripts/bridge_ros1.py -o /opt/edge-agent/bridge_ros1.py
 ```
 
 config.yaml 启用：
@@ -23,8 +23,8 @@ config.yaml 启用：
 ```yaml
 ros:
   enabled: true
-  bridge_script_ros1: "/opt/agent/bridge_ros1.py"
-  bridge_script_ros2: "/opt/agent/bridge_ros2.py"
+  bridge_script_ros1: "/opt/edge-agent/bridge_ros1.py"
+  bridge_script_ros2: "/opt/edge-agent/bridge_ros2.py"
   car_max_linear_speed: 2.0
   car_max_angular_speed: 3.14
   safety_watchdog_timeout: 5
