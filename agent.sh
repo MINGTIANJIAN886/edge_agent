@@ -9,17 +9,22 @@ set -euo pipefail
 # ============================================================
 
 REPO="MINGTIANJIAN886/edge_agent"
-INSTALL_DIR="/usr/local/bin"
-CONFIG_DIR="/etc/agent"
-LOG_DIR="/var/log/agent"
-DOWNLOAD_DIR="/tmp/agent/downloads"
+INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
+CONFIG_DIR="${CONFIG_DIR:-/etc/edge-agent}"
+DATA_DIR="${DATA_DIR:-/var/lib/edge-agent}"
+MODEL_DIR="${MODEL_DIR:-${DATA_DIR}/models}"
+LOG_DIR="${LOG_DIR:-/var/log/edge-agent}"
+DOWNLOAD_DIR="${DOWNLOAD_DIR:-/var/cache/edge-agent/downloads}"
+SCRIPT_DIR="${SCRIPT_DIR:-/opt/edge-agent}"
 SERVICE_DIR="/etc/systemd/system"
 
-AGENT_BIN="${INSTALL_DIR}/agent"
+AGENT_BIN="${INSTALL_DIR}/edge-agent"
 CONFIG_FILE="${CONFIG_DIR}/config.yaml"
-SERVICE_FILE="${SERVICE_DIR}/agent.service"
-BRIDGE_SCRIPT1="/opt/agent/bridge_ros1.py"
-BRIDGE_SCRIPT2="/opt/agent/bridge_ros2.py"
+SERVICE_FILE="${SERVICE_DIR}/edge-agent.service"
+
+BRIDGE_SCRIPT1="${SCRIPT_DIR}/bridge_ros1.py"
+BRIDGE_SCRIPT2="${SCRIPT_DIR}/bridge_ros2.py"
+OCR_SCRIPT="${SCRIPT_DIR}/edge_ocr.py"
 
 ARCH=$(uname -m)
 case "$ARCH" in
@@ -36,8 +41,13 @@ MQTT_PORT="${MQTT_PORT:-8883}"
 MQTT_USER="${MQTT_USER:-liyankun}"
 MQTT_PASS="${MQTT_PASS:-liyankun152455A}"
 OTA_SERVER="${OTA_SERVER:-https://amplifier-badge-awoke.ngrok-free.dev}"
-ROS_BRIDGE_SCRIPT1="${ROS_BRIDGE1:-/opt/agent/bridge_ros1.py}"
-ROS_BRIDGE_SCRIPT2="${ROS_BRIDGE2:-/opt/agent/bridge_ros2.py}"
+OCR_ENABLED="${OCR_ENABLED:-false}"
+OCR_INTERVAL="${OCR_INTERVAL:-30}"
+OCR_CONF_THRESHOLD="${OCR_CONF_THRESHOLD:-0.5}"
+INFERENCE_URL="${INFERENCE_URL:-http://127.0.0.1:8080}"
+ROS_PYTHON="${ROS_PYTHON:-python3}"
+ROS_BRIDGE_SCRIPT1="${ROS_BRIDGE1:-${SCRIPT_DIR}/bridge_ros1.py}"
+ROS_BRIDGE_SCRIPT2="${ROS_BRIDGE2:-${SCRIPT_DIR}/bridge_ros2.py}"
 ROS_MAX_LINEAR="${ROS_MAX_LINEAR:-2.0}"
 ROS_MAX_ANGULAR="${ROS_MAX_ANGULAR:-3.14}"
 ROS_WATCHDOG="${ROS_WATCHDOG:-5}"
@@ -46,7 +56,34 @@ INSTALL_BRIDGE=false
 for arg in "$@"; do
   case "$arg" in
     --bridge) INSTALL_BRIDGE=true ;;
-    --help) echo "Usage: $0 [--bridge] [DEVICE_ID]"; exit 0 ;;
+    --force-config) FORCE_CONFIG=true ;;
+    --help)
+      echo "Usage: $0 [--bridge] [--force-config] [DEVICE_ID]"
+      echo ""
+      echo "Options:"
+      echo "  --bridge         Install ROS bridge scripts and service"
+      echo "  --force-config   Force regenerate config.yaml even if it exists"
+      echo ""
+      echo "Environment variables:"
+      echo "  DEVICE_ID       Device identifier (default: pi-001)"
+      echo "  MQTT_BROKER     MQTT broker host"
+      echo "  MQTT_PORT       MQTT broker port (default: 8883)"
+      echo "  MQTT_USER       MQTT username"
+      echo "  MQTT_PASS       MQTT password"
+      echo "  OTA_SERVER      OTA update server URL"
+      echo "  MODEL_DIR       Model directory (default: /var/lib/edge-agent/models)"
+      echo "  INSTALL_DIR     Binary install directory (default: /usr/local/bin)"
+      echo "  CONFIG_DIR      Config directory (default: /etc/edge-agent)"
+      echo "  SCRIPT_DIR      Scripts directory (default: /opt/edge-agent)"
+      echo "  LOG_DIR         Log directory (default: /var/log/edge-agent)"
+      echo "  DOWNLOAD_DIR    Download cache (default: /var/cache/edge-agent/downloads)"
+      echo "  INFERENCE_URL   Inference service URL (default: http://127.0.0.1:8080)"
+      echo "  OCR_ENABLED     Enable OCR (default: false)"
+      echo "  ROS_MAX_LINEAR  Max linear speed (default: 2.0)"
+      echo "  ROS_MAX_ANGULAR Max angular speed (default: 3.14)"
+      echo "  ROS_WATCHDOG    Safety watchdog timeout (default: 5)"
+      exit 0
+      ;;
   esac
 done
 
@@ -63,7 +100,14 @@ echo ""
 
 # [1/5] 创建目录
 echo "[1/5] Creating directories..."
-mkdir -p "${INSTALL_DIR}" "${CONFIG_DIR}" "${LOG_DIR}" "${DOWNLOAD_DIR}"
+mkdir -p \
+  "${INSTALL_DIR}" \
+  "${CONFIG_DIR}" \
+  "${DATA_DIR}" \
+  "${MODEL_DIR}" \
+  "${LOG_DIR}" \
+  "${DOWNLOAD_DIR}" \
+  "${SCRIPT_DIR}"
 
 # [2/5] 下载 agent 二进制
 if [ ! -f "${AGENT_BIN}" ]; then
@@ -87,8 +131,16 @@ else
 fi
 
 # [3/5] 生成配置
-echo "[3/5] Generating configuration..."
-cat > "${CONFIG_FILE}" << EOF
+if [ -f "${CONFIG_FILE}" ] && [ "${FORCE_CONFIG:-false}" != "true" ]; then
+  echo "[3/5] Keeping existing configuration: ${CONFIG_FILE}"
+  echo "  -> Set FORCE_CONFIG=true or remove the file to regenerate"
+else
+  if [ "${FORCE_CONFIG:-false}" = "true" ]; then
+    echo "[3/5] Force-regenerating configuration (--force-config)..."
+  else
+    echo "[3/5] Generating initial configuration..."
+  fi
+  cat > "${CONFIG_FILE}" << EOF
 device_id: "${DEVICE_ID}"
 download_dir: "${DOWNLOAD_DIR}"
 heartbeat_interval: 30
@@ -97,7 +149,7 @@ log_dir: "${LOG_DIR}"
 mqtt:
   broker: "${MQTT_BROKER}"
   port: ${MQTT_PORT}
-  client_id: "agent-${DEVICE_ID}"
+  client_id: "edge-agent-${DEVICE_ID}"
   username: "${MQTT_USER}"
   password: "${MQTT_PASS}"
   topic:
@@ -113,14 +165,38 @@ ota:
   server_url: "${OTA_SERVER}"
   version_path: "version.json"
   check_interval: 300
-  current_version: "5.0"
-  model_file: "/home/liyankun/models/model.ncnn.bin"
-  model_dir: "/home/liyankun/models"
-  current_symlink: "/home/liyankun/models/current"
+  current_version: ""
+  model_file: "${MODEL_DIR}/model.ncnn.bin"
+  model_dir: "${MODEL_DIR}"
+  current_symlink: "${MODEL_DIR}/current"
   backup_count: 3
   inference_restart_cmd: ""
 
+inference:
+  service_url: "${INFERENCE_URL}"
+  timeout: 30
+
+ocr:
+  enabled: ${OCR_ENABLED}
+  script_path: "${OCR_SCRIPT}"
+  interval: ${OCR_INTERVAL}
+  conf_threshold: ${OCR_CONF_THRESHOLD}
+  command_topic: "edge/${DEVICE_ID}/ocr/command"
+  result_topic: "edge/${DEVICE_ID}/ocr/result"
+
+ros:
+  enabled: ${INSTALL_BRIDGE}
+  bridge_script_ros1: "${BRIDGE_SCRIPT1}"
+  bridge_script_ros2: "${BRIDGE_SCRIPT2}"
+  bridge_python: "${ROS_PYTHON}"
+  car_max_linear_speed: ${ROS_MAX_LINEAR}
+  car_max_angular_speed: ${ROS_MAX_ANGULAR}
+  safety_watchdog_timeout: ${ROS_WATCHDOG}
+  cmd_vel_topic: "edge/${DEVICE_ID}/car/cmd_vel"
+  bridge_result_topic: "edge/${DEVICE_ID}/bridge/result"
+
 cert_api: ""
+
 cert:
   cert_file: ""
   key_file: ""
@@ -132,17 +208,9 @@ auth:
   method: "password"
   token: ""
   token_exchange: false
-
-ros:
-  enabled: ${INSTALL_BRIDGE}
-  bridge_script_ros1: "${ROS_BRIDGE_SCRIPT1}"
-  bridge_script_ros2: "${ROS_BRIDGE_SCRIPT2}"
-  bridge_python: "python3"
-  car_max_linear_speed: ${ROS_MAX_LINEAR}
-  car_max_angular_speed: ${ROS_MAX_ANGULAR}
-  safety_watchdog_timeout: ${ROS_WATCHDOG}
 EOF
-echo "  -> ${CONFIG_FILE}"
+  echo "  -> ${CONFIG_FILE}"
+fi
 
 # [4/5] 安装 systemd 服务
 echo "[4/5] Installing systemd services..."
@@ -168,31 +236,36 @@ EOF
 
 if command -v systemctl &>/dev/null; then
     systemctl daemon-reload
-    systemctl enable agent
-    systemctl restart agent
-    echo "  -> agent.service installed and started"
+    systemctl enable edge-agent
+    systemctl restart edge-agent
+    echo "  -> edge-agent.service installed and started"
 else
-    nohup "${AGENT_BIN}" -config "${CONFIG_FILE}" > "${LOG_DIR}/agent.log" 2>&1 &
+    nohup "${AGENT_BIN}" -config "${CONFIG_FILE}" > "${LOG_DIR}/edge-agent.log" 2>&1 &
     echo "  -> PID: $!"
 fi
 
 # [5/5] 可选：部署 ROS 桥接脚本 + car_bridge.service
 if [ "${INSTALL_BRIDGE}" = true ]; then
   echo "[5/5] Deploying ROS bridge scripts and service..."
-  mkdir -p /opt/agent
+  mkdir -p "${SCRIPT_DIR}"
 
   echo "  -> downloading bridge_ros2.py..."
-  if curl -fsSL -o /opt/agent/bridge_ros2.py \
+  if curl -fsSL -o "${SCRIPT_DIR}/bridge_ros2.py" \
     "https://raw.githubusercontent.com/${REPO}/main/scripts/bridge_ros2.py"; then
-    chmod +x /opt/agent/bridge_ros2.py
-    echo "       /opt/agent/bridge_ros2.py"
+    chmod +x "${SCRIPT_DIR}/bridge_ros2.py"
+    echo "       ${SCRIPT_DIR}/bridge_ros2.py"
   else
     echo "       WARNING: download failed, bridge will not work"
   fi
 
-  curl -fsSL -o /opt/agent/bridge_ros1.py \
+  curl -fsSL -o "${SCRIPT_DIR}/bridge_ros1.py" \
     "https://raw.githubusercontent.com/${REPO}/main/scripts/bridge_ros1.py" 2>/dev/null && \
-    chmod +x /opt/agent/bridge_ros1.py || true
+    chmod +x "${SCRIPT_DIR}/bridge_ros1.py" || true
+
+  echo "  -> downloading edge_ocr.py..."
+  curl -fsSL -o "${SCRIPT_DIR}/edge_ocr.py" \
+    "https://raw.githubusercontent.com/${REPO}/main/edge_ocr.py" 2>/dev/null && \
+    chmod +x "${SCRIPT_DIR}/edge_ocr.py" || true
 
   cat > "${SERVICE_DIR}/car_bridge.service" << EOF
 [Unit]
@@ -201,7 +274,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/bin/bash -c "VER=\$(ls /opt/ros/ 2>/dev/null | head -1); source /opt/ros/\$VER/setup.bash 2>/dev/null; exec python3 /opt/agent/bridge_ros2.py"
+ExecStart=/bin/bash -c "VER=\$(ls /opt/ros/ 2>/dev/null | head -1); source /opt/ros/\$VER/setup.bash 2>/dev/null; exec ${ROS_PYTHON} ${SCRIPT_DIR}/bridge_ros2.py"
 Restart=always
 RestartSec=3
 
@@ -217,18 +290,26 @@ EOF
   fi
 
   echo "  -> ROS bridge enabled in config (ros.enabled=true)"
-  echo "  -> car_bridge.service manages bridge lifecycle (separate from agent)"
+  echo "  -> car_bridge.service manages bridge lifecycle (separate from edge-agent)"
 fi
 
 echo ""
 echo "=== Install Complete ==="
 echo "Binary: ${AGENT_BIN}"
 echo "Config: ${CONFIG_FILE}"
-echo "Logs:   journalctl -u agent -f"
+echo "Logs:   journalctl -u edge-agent -f"
 echo ""
 echo "Commands:"
-echo "  sudo systemctl status agent"
-echo "  journalctl -u agent -f"
+echo "  sudo systemctl status edge-agent"
+echo "  journalctl -u edge-agent -f"
+echo ""
+echo "All paths conform to Linux FHS standard:"
+echo "  Binary:  /usr/local/bin/edge-agent"
+echo "  Config:  /etc/edge-agent/config.yaml"
+echo "  Data:    /var/lib/edge-agent/models"
+echo "  Scripts: /opt/edge-agent/"
+echo "  Logs:    /var/log/edge-agent/"
+echo "  Cache:   /var/cache/edge-agent/downloads"
 echo ""
 echo "To trigger OTA update:"
 echo "  mosquitto_pub ... -t edge/${DEVICE_ID}/mcp/call -m '{\"id\":\"o\",\"method\":\"check_update\",\"params\":{}}'"
