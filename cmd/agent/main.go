@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -79,7 +80,6 @@ func main() {
 		username = "token-" + cfg.Auth.Token
 		password = ""
 	case "cert":
-		// TLS client cert handles auth; username can be device ID
 		if username == "" {
 			username = cfg.DeviceID
 		}
@@ -109,37 +109,61 @@ func main() {
 	opts.SetReconnectingHandler(func(_ mqtt.Client, _ *mqtt.ClientOptions) {
 		log.Println("MQTT reconnecting...")
 	})
+
 	rosVer := ros.Detect()
 	log.Printf("ROS version: %s", rosVer)
 
-	var bridgeMgr *bridge.Manager
-	if cfg.ROS.Enabled && rosVer != ros.None {
-		bridgeMgr = bridge.New()
-		log.Println("ROS bridge commands active (car_bridge.service must be running)")
-	}
+	// Declare long-lived state before setting OnConnectHandler
+	// (closures capture by reference, initialized before Connect)
+	var (
+		bridgeMgr        *bridge.Manager
+		ocrCtrl          *ocr.Controller
+		carWatchdogCancel context.CancelFunc
+	)
 
 	opts.SetOnConnectHandler(func(c mqtt.Client) {
 		log.Println("MQTT connected")
 		mcp.PublishTools(c, cfg.DeviceID, cfg.MQTT.Topic.MCPRegister, rosVer)
 		remote.SubscribeCommands(c, cfg.DeviceID, cfg.MQTT.Topic.Command)
 		download.SubscribeDownloads(c, cfg.DeviceID, cfg.MQTT.Topic.Download, cfg.DownloadDir)
-		if cfg.OCR.Enabled {
-			ctrl := ocr.NewController(c, cfg.OCR, cfg.DeviceID)
-			ctrl.SubscribeCommands()
-			if cfg.OCR.Interval > 0 {
-				ctrl.Start(0)
-			}
+
+		// OCR: only re-subscribe, timer goroutine was started once
+		if ocrCtrl != nil {
+			ocrCtrl.SubscribeCommands()
 		}
+
 		mcp.SubscribeCalls(c, cfg.DeviceID, cfg.MQTT.Topic.MCPCall, cfg.Inference.ServiceURL, cfg)
+
+		// Car bridge: cancel old watchdog, subscribe with new context
 		if bridgeMgr != nil {
-			subscribeBridgeCommands(c, cfg.DeviceID, cfg.MQTT.Topic, bridgeMgr, rosVer, cfg.ROS)
+			if carWatchdogCancel != nil {
+				carWatchdogCancel()
+			}
+			var ctx context.Context
+			ctx, carWatchdogCancel = context.WithCancel(context.Background())
+			subscribeBridgeCommands(ctx, c, cfg.DeviceID, cfg.MQTT.Topic, bridgeMgr, rosVer, cfg.ROS)
 		}
 	})
+
 	if tlsConfig != nil {
 		opts.SetTLSConfig(tlsConfig)
 	}
 
 	client := mqtt.NewClient(opts)
+
+	// Initialize once — runs before first OnConnectHandler fires
+	if cfg.ROS.Enabled && rosVer != ros.None {
+		bridgeMgr = bridge.New()
+		log.Println("ROS bridge commands active (car_bridge.service must be running)")
+	}
+
+	if cfg.OCR.Enabled {
+		ocrCtrl = ocr.NewController(client, cfg.OCR, cfg.DeviceID)
+		if cfg.OCR.Interval > 0 {
+			ocrCtrl.Start(0)
+		}
+	}
+
 	token := client.Connect()
 	token.WaitTimeout(15 * time.Second)
 	if token.Error() != nil {
@@ -167,7 +191,7 @@ func main() {
 	client.Disconnect(1000)
 }
 
-func subscribeBridgeCommands(client mqtt.Client, deviceID string, topics config.Topic, mgr *bridge.Manager, ver ros.Version, rosCfg config.ROSConfig) {
+func subscribeBridgeCommands(ctx context.Context, client mqtt.Client, deviceID string, topics config.Topic, mgr *bridge.Manager, ver ros.Version, rosCfg config.ROSConfig) {
 	mqttCmdVelTopic := rosCfg.CmdVelTopic
 	if mqttCmdVelTopic == "" {
 		mqttCmdVelTopic = strings.Replace(topics.Command, "/command", "/car/cmd_vel", 1)
@@ -271,22 +295,28 @@ func subscribeBridgeCommands(client mqtt.Client, deviceID string, topics config.
 		go func() {
 			ticker := time.NewTicker(time.Duration(watchdogTimeout) * time.Second)
 			defer ticker.Stop()
-			for range ticker.C {
-				lastCmdMu.Lock()
-				elapsed := time.Since(lastCmd)
-				lastCmdMu.Unlock()
-				if elapsed >= time.Duration(watchdogTimeout)*time.Second {
-					log.Printf("safety watchdog: no cmd_vel for %ds, stopping", watchdogTimeout)
-					data, _ := json.Marshal(map[string]interface{}{
-						"linear":  map[string]float64{"x": 0, "y": 0, "z": 0},
-						"angular": map[string]float64{"x": 0, "y": 0, "z": 0},
-					})
-					mgr.Send(ros.BridgeInput{
-						Cmd:     "publish",
-						Topic:   rosCmdVelTopic,
-						MsgType: msgType,
-						Data:    data,
-					})
+			for {
+				select {
+				case <-ctx.Done():
+					log.Println("car watchdog cancelled (reconnect)")
+					return
+				case <-ticker.C:
+					lastCmdMu.Lock()
+					elapsed := time.Since(lastCmd)
+					lastCmdMu.Unlock()
+					if elapsed >= time.Duration(watchdogTimeout)*time.Second {
+						log.Printf("safety watchdog: no cmd_vel for %ds, stopping", watchdogTimeout)
+						data, _ := json.Marshal(map[string]interface{}{
+							"linear":  map[string]float64{"x": 0, "y": 0, "z": 0},
+							"angular": map[string]float64{"x": 0, "y": 0, "z": 0},
+						})
+						mgr.Send(ros.BridgeInput{
+							Cmd:     "publish",
+							Topic:   rosCmdVelTopic,
+							MsgType: msgType,
+							Data:    data,
+						})
+					}
 				}
 			}
 		}()
