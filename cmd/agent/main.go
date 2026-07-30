@@ -110,8 +110,8 @@ func main() {
 		log.Println("MQTT reconnecting...")
 	})
 
-	rosVer := ros.Detect()
-	log.Printf("ROS version: %s", rosVer)
+	rosVer := resolveROSVersion(cfg)
+	log.Printf("ROS version: %s (config=%d, distro=%s)", rosVer, cfg.ROS.Version, cfg.ROS.Distro)
 
 	// Declare long-lived state before setting OnConnectHandler
 	// (closures capture by reference, initialized before Connect)
@@ -191,6 +191,16 @@ func main() {
 	client.Disconnect(1000)
 }
 
+func resolveROSVersion(cfg *config.Config) ros.Version {
+	if cfg.ROS.Version == 1 {
+		return ros.ROS1
+	}
+	if cfg.ROS.Version == 2 {
+		return ros.ROS2
+	}
+	return ros.Detect()
+}
+
 func subscribeBridgeCommands(ctx context.Context, client mqtt.Client, deviceID string, topics config.Topic, mgr *bridge.Manager, ver ros.Version, rosCfg config.ROSConfig) {
 	mqttCmdVelTopic := rosCfg.CmdVelTopic
 	if mqttCmdVelTopic == "" {
@@ -209,10 +219,13 @@ func subscribeBridgeCommands(ctx context.Context, client mqtt.Client, deviceID s
 	maxAngular := rosCfg.MaxAngularSpeed
 	watchdogTimeout := rosCfg.SafetyWatchdog
 
-	msgType := map[ros.Version]string{
-		ros.ROS1: "geometry_msgs/Twist",
-		ros.ROS2: "geometry_msgs/msg/Twist",
-	}[ver]
+	msgType := rosCfg.CmdVelMessageType
+	if msgType == "" {
+		msgType = map[ros.Version]string{
+			ros.ROS1: "geometry_msgs/Twist",
+			ros.ROS2: "geometry_msgs/msg/Twist",
+		}[ver]
+	}
 
 	var lastCmdMu sync.Mutex
 	lastCmd := time.Now()

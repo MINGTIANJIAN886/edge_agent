@@ -83,6 +83,9 @@ type Inference struct {
 
 type ROSConfig struct {
 	Enabled           bool    `yaml:"enabled"`
+	Version           int     `yaml:"version"`
+	Distro            string  `yaml:"distro"`
+	CmdVelMessageType string  `yaml:"cmd_vel_message_type"`
 	BridgeScript1     string  `yaml:"bridge_script_ros1"`
 	BridgeScript2     string  `yaml:"bridge_script_ros2"`
 	PythonBin         string  `yaml:"bridge_python"`
