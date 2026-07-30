@@ -46,20 +46,25 @@ OCR_INTERVAL="${OCR_INTERVAL:-30}"
 OCR_CONF_THRESHOLD="${OCR_CONF_THRESHOLD:-0.5}"
 INFERENCE_URL="${INFERENCE_URL:-http://127.0.0.1:8080}"
 ROS_PYTHON="${ROS_PYTHON:-python3}"
-ROS_BRIDGE_SCRIPT1="${ROS_BRIDGE1:-${SCRIPT_DIR}/bridge_ros1.py}"
-ROS_BRIDGE_SCRIPT2="${ROS_BRIDGE2:-${SCRIPT_DIR}/bridge_ros2.py}"
+ROS_BRIDGE_SCRIPT1="${ROS_BRIDGE_SCRIPT1:-${SCRIPT_DIR}/bridge_ros1.py}"
+ROS_BRIDGE_SCRIPT2="${ROS_BRIDGE_SCRIPT2:-${SCRIPT_DIR}/bridge_ros2.py}"
+ROS_VERSION="${ROS_VERSION:-auto}"
+ROS_DISTRO="${ROS_DISTRO:-}"
 ROS_MAX_LINEAR="${ROS_MAX_LINEAR:-2.0}"
 ROS_MAX_ANGULAR="${ROS_MAX_ANGULAR:-3.14}"
 ROS_WATCHDOG="${ROS_WATCHDOG:-5}"
+ROS_CMD_VEL_TOPIC="${ROS_CMD_VEL_TOPIC:-/cmd_vel}"
 INSTALL_BRIDGE=false
 FORCE_CONFIG=false
+UPGRADE=false
 
 show_help() {
-  echo "Usage: $0 [--bridge] [--force-config] [DEVICE_ID]"
+  echo "Usage: $0 [--bridge] [--force-config] [--upgrade] [DEVICE_ID]"
   echo ""
   echo "Options:"
   echo "  --bridge         Install ROS bridge scripts and service"
-  echo "  --force-config   Force regenerate config.yaml even if it exists"
+  echo "  --force-config   Force regenerate config.yaml (backup old one)"
+  echo "  --upgrade        Download and replace existing binary"
   echo ""
   echo "Environment variables:"
   echo "  DEVICE_ID       Device identifier (default: pi-001)"
@@ -76,15 +81,19 @@ show_help() {
   echo "  DOWNLOAD_DIR    Download cache (default: /var/cache/edge-agent/downloads)"
   echo "  INFERENCE_URL   Inference service URL (default: http://127.0.0.1:8080)"
   echo "  OCR_ENABLED     Enable OCR (default: false)"
+  echo "  ROS_VERSION     ROS version: 1, 2, or auto (default: auto)"
+  echo "  ROS_DISTRO      ROS distro name (default: auto-detect)"
   echo "  ROS_MAX_LINEAR  Max linear speed (default: 2.0)"
   echo "  ROS_MAX_ANGULAR Max angular speed (default: 3.14)"
   echo "  ROS_WATCHDOG    Safety watchdog timeout (default: 5)"
+  echo "  ROS_CMD_VEL_TOPIC  ROS cmd_vel topic (default: /cmd_vel)"
 }
 
 for arg in "$@"; do
   case "$arg" in
     --bridge) INSTALL_BRIDGE=true ;;
     --force-config) FORCE_CONFIG=true ;;
+    --upgrade) UPGRADE=true ;;
     --help) show_help; exit 0 ;;
     --*) echo "Unknown option: $arg" >&2; exit 1 ;;
     *) DEVICE_ID="$arg" ;;
@@ -110,33 +119,67 @@ mkdir -p \
   "${SCRIPT_DIR}"
 
 # [2/5] 下载 agent 二进制
-if [ ! -f "${AGENT_BIN}" ]; then
-  echo "[2/5] Downloading agent (${BINARY}) from GitHub Release..."
+DOWNLOAD_NEEDED=false
+if [ "${UPGRADE}" = true ]; then
+  DOWNLOAD_NEEDED=true
+  echo "[2/5] Upgrading agent (${BINARY})..."
+elif [ ! -f "${AGENT_BIN}" ]; then
+  DOWNLOAD_NEEDED=true
+  echo "[2/5] Downloading agent (${BINARY})..."
+else
+  echo "[2/5] Agent already installed at ${AGENT_BIN} (use --upgrade to replace)"
+fi
+
+if [ "${DOWNLOAD_NEEDED}" = true ]; then
   DOWNLOAD_URL="https://github.com/${REPO}/releases/latest/download/${BINARY}"
   MIRROR_URL="https://ghproxy.com/${DOWNLOAD_URL}"
+  TMP_BIN="$(mktemp)"
 
-  if curl -fsSL --connect-timeout 10 --max-time 120 -o "${AGENT_BIN}" "${DOWNLOAD_URL}"; then
+  if curl -fsSL --connect-timeout 10 --max-time 120 -o "${TMP_BIN}" "${DOWNLOAD_URL}"; then
     echo "  -> downloaded from GitHub Releases"
-  elif curl -fsSL --connect-timeout 10 --max-time 120 -o "${AGENT_BIN}" "${MIRROR_URL}"; then
+    install -m 0755 "${TMP_BIN}" "${AGENT_BIN}"
+    rm -f "${TMP_BIN}"
+  elif curl -fsSL --connect-timeout 10 --max-time 120 -o "${TMP_BIN}" "${MIRROR_URL}"; then
     echo "  -> downloaded from mirror (ghproxy.com)"
+    install -m 0755 "${TMP_BIN}" "${AGENT_BIN}"
+    rm -f "${TMP_BIN}"
   else
-    echo "WARNING: Cannot download binary from GitHub Releases."
+    rm -f "${TMP_BIN}"
+    echo "ERROR: Cannot download ${BINARY} from GitHub Releases."
     echo "  Try: make build && scp build/${BINARY} ${DEVICE_ID}:${AGENT_BIN}"
     echo "  Or set up GitHub Actions Release (push to main to trigger build)"
-    touch "${AGENT_BIN}"
+    exit 1
   fi
-  chmod +x "${AGENT_BIN}" 2>/dev/null || true
-else
-  echo "[2/5] Agent already installed at ${AGENT_BIN}"
+fi
+
+# Legacy migration: backup old config BEFORE generating new one
+if [ -f /etc/agent/config.yaml ] && [ ! -f "${CONFIG_FILE}" ]; then
+  mkdir -p "${CONFIG_DIR}"
+  cp -a /etc/agent/config.yaml "${CONFIG_DIR}/config.yaml.legacy"
+  echo "  -> Backed up old config to ${CONFIG_DIR}/config.yaml.legacy"
+fi
+
+# Legacy migration: check agent.service content before disabling
+LEGACY_SERVICE="/etc/systemd/system/agent.service"
+if [ -f "${LEGACY_SERVICE}" ] && grep -q "/usr/local/bin/agent" "${LEGACY_SERVICE}" 2>/dev/null; then
+  echo "  -> Detected legacy agent.service (belongs to edge-agent), migrating..."
+  systemctl disable --now agent.service 2>/dev/null || true
+  mv "${LEGACY_SERVICE}" "${LEGACY_SERVICE}.legacy.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
+  systemctl daemon-reload 2>/dev/null || true
 fi
 
 # [3/5] 生成配置
-if [ -f "${CONFIG_FILE}" ] && [ "${FORCE_CONFIG:-false}" != "true" ]; then
+if [ -f "${CONFIG_FILE}" ] && [ "${FORCE_CONFIG}" != true ]; then
   echo "[3/5] Keeping existing configuration: ${CONFIG_FILE}"
-  echo "  -> Set FORCE_CONFIG=true or remove the file to regenerate"
+  echo "  -> Set --force-config or FORCE_CONFIG=true to regenerate"
 else
-  if [ "${FORCE_CONFIG:-false}" = "true" ]; then
-    echo "[3/5] Force-regenerating configuration (--force-config)..."
+  if [ "${FORCE_CONFIG}" = true ]; then
+    # Backup current config before force-regen
+    if [ -f "${CONFIG_FILE}" ]; then
+      cp -a "${CONFIG_FILE}" "${CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+      echo "  -> Backed up current config"
+    fi
+    echo "[3/5] Force-regenerating configuration..."
   else
     echo "[3/5] Generating initial configuration..."
   fi
@@ -192,7 +235,8 @@ ros:
   car_max_linear_speed: ${ROS_MAX_LINEAR}
   car_max_angular_speed: ${ROS_MAX_ANGULAR}
   safety_watchdog_timeout: ${ROS_WATCHDOG}
-  cmd_vel_topic: "edge/${DEVICE_ID}/car/cmd_vel"
+  mqtt_cmd_vel_topic: "edge/${DEVICE_ID}/car/cmd_vel"
+  ros_cmd_vel_topic: "${ROS_CMD_VEL_TOPIC}"
   bridge_result_topic: "edge/${DEVICE_ID}/bridge/result"
 
 cert_api: ""
@@ -216,29 +260,100 @@ fi
 chown root:root "${CONFIG_FILE}" 2>/dev/null || true
 chmod 600 "${CONFIG_FILE}"
 
-# Migrate legacy agent.service → edge-agent.service
-if command -v systemctl &>/dev/null; then
-  if systemctl list-unit-files agent.service &>/dev/null 2>&1; then
-    echo "  -> Detected legacy agent.service, migrating..."
-    systemctl disable --now agent.service 2>/dev/null || true
-    rm -f "/etc/systemd/system/agent.service"
-    systemctl daemon-reload 2>/dev/null || true
-  fi
-  # Backup old config if new path doesn't exist yet
-  if [ -f /etc/agent/config.yaml ] && [ ! -f "${CONFIG_FILE}" ]; then
-    cp -a /etc/agent/config.yaml "${CONFIG_DIR}/config.yaml.legacy"
-    echo "  -> Backed up old config to ${CONFIG_DIR}/config.yaml.legacy"
+# [4/5] 部署脚本 (OCR + ROS 桥接) — 在启动服务前完成
+echo "[4/5] Deploying scripts..."
+mkdir -p "${SCRIPT_DIR}"
+
+# OCR script (download if OCR is enabled)
+if [ "${OCR_ENABLED}" = true ]; then
+  echo "  -> downloading edge_ocr.py..."
+  if curl -fsSL -o "${SCRIPT_DIR}/edge_ocr.py" \
+    "https://raw.githubusercontent.com/${REPO}/main/edge_ocr.py"; then
+    chmod +x "${SCRIPT_DIR}/edge_ocr.py"
+    echo "       ${SCRIPT_DIR}/edge_ocr.py"
+  else
+    echo "       WARNING: OCR script download failed"
   fi
 fi
 
-# [4/5] 安装 systemd 服务
-echo "[4/5] Installing systemd services..."
+# Determine active bridge script based on ROS version
+ACTIVE_BRIDGE=""
+if [ "${INSTALL_BRIDGE}" = true ]; then
+  echo "  -> downloading bridge scripts..."
+  curl -fsSL -o "${SCRIPT_DIR}/bridge_ros2.py" \
+    "https://raw.githubusercontent.com/${REPO}/main/scripts/bridge_ros2.py" && \
+    chmod +x "${SCRIPT_DIR}/bridge_ros2.py" || \
+    echo "       WARNING: bridge_ros2.py download failed"
+
+  curl -fsSL -o "${SCRIPT_DIR}/bridge_ros1.py" \
+    "https://raw.githubusercontent.com/${REPO}/main/scripts/bridge_ros1.py" && \
+    chmod +x "${SCRIPT_DIR}/bridge_ros1.py" || \
+    echo "       WARNING: bridge_ros1.py download failed"
+
+  # Determine which bridge to use
+  case "${ROS_VERSION}" in
+    1) ACTIVE_BRIDGE="${ROS_BRIDGE_SCRIPT1}" ;;
+    2) ACTIVE_BRIDGE="${ROS_BRIDGE_SCRIPT2}" ;;
+    auto)
+      # Auto-detect: prefer ROS2, fallback to ROS1
+      if [ -d /opt/ros/humble ] || [ -d /opt/ros/jazzy ] || [ -d /opt/ros/rolling ]; then
+        ACTIVE_BRIDGE="${ROS_BRIDGE_SCRIPT2}"
+      elif [ -d /opt/ros/noetic ] || ls /opt/ros/ 2>/dev/null | grep -q "^ros"; then
+        ACTIVE_BRIDGE="${ROS_BRIDGE_SCRIPT1}"
+      else
+        echo "  -> WARNING: No ROS installation detected under /opt/ros"
+        ACTIVE_BRIDGE="${ROS_BRIDGE_SCRIPT2}"
+      fi
+      ;;
+  esac
+
+  # Build source command for ROS environment
+  ROS_SOURCE_CMD=""
+  if [ -n "${ROS_DISTRO}" ]; then
+    ROS_SOURCE_CMD="source /opt/ros/${ROS_DISTRO}/setup.bash 2>/dev/null; "
+  else
+    ROS_SOURCE_CMD="VER=\$(ls /opt/ros/ 2>/dev/null | head -1); source /opt/ros/\$VER/setup.bash 2>/dev/null; "
+  fi
+
+  cat > "${SERVICE_DIR}/car_bridge.service" << EOF
+[Unit]
+Description=ROS Car Bridge (reads /tmp/edge_bridge_cmd)
+After=network.target
+Before=edge-agent.service
+
+[Service]
+Type=simple
+ExecStart=/bin/bash -c "${ROS_SOURCE_CMD}exec ${ROS_PYTHON} ${ACTIVE_BRIDGE}"
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  if command -v systemctl &>/dev/null; then
+    systemctl daemon-reload
+    systemctl enable car_bridge
+    systemctl restart car_bridge 2>/dev/null || true
+    echo "  -> car_bridge.service installed and started (${ACTIVE_BRIDGE})"
+  fi
+fi
+
+# [5/5] 安装 edge-agent systemd 服务（最后启动，依赖已就绪）
+echo "[5/5] Installing edge-agent service..."
 
 cat > "${SERVICE_FILE}" << EOF
 [Unit]
 Description=Edge Agent - ${DEVICE_ID}
 After=network.target
 Wants=network-online.target
+EOF
+if [ -n "${ACTIVE_BRIDGE}" ]; then
+  cat >> "${SERVICE_FILE}" << EOF
+After=car_bridge.service
+EOF
+fi
+cat >> "${SERVICE_FILE}" << EOF
 
 [Service]
 Type=simple
@@ -261,63 +376,6 @@ if command -v systemctl &>/dev/null; then
 else
     nohup "${AGENT_BIN}" -config "${CONFIG_FILE}" > "${LOG_DIR}/edge-agent.log" 2>&1 &
     echo "  -> PID: $!"
-fi
-
-# [5/5] 部署脚本 (OCR + ROS 桥接)
-echo "[5/5] Deploying scripts..."
-mkdir -p "${SCRIPT_DIR}"
-
-# OCR script (always download if OCR is enabled)
-if [ "${OCR_ENABLED}" = true ]; then
-  echo "  -> downloading edge_ocr.py..."
-  if curl -fsSL -o "${SCRIPT_DIR}/edge_ocr.py" \
-    "https://raw.githubusercontent.com/${REPO}/main/edge_ocr.py"; then
-    chmod +x "${SCRIPT_DIR}/edge_ocr.py"
-    echo "       ${SCRIPT_DIR}/edge_ocr.py"
-  else
-    echo "       WARNING: OCR script download failed"
-  fi
-fi
-
-# ROS bridge scripts and service
-if [ "${INSTALL_BRIDGE}" = true ]; then
-  echo "  -> downloading bridge_ros2.py..."
-  if curl -fsSL -o "${SCRIPT_DIR}/bridge_ros2.py" \
-    "https://raw.githubusercontent.com/${REPO}/main/scripts/bridge_ros2.py"; then
-    chmod +x "${SCRIPT_DIR}/bridge_ros2.py"
-    echo "       ${SCRIPT_DIR}/bridge_ros2.py"
-  else
-    echo "       WARNING: download failed, bridge will not work"
-  fi
-
-  curl -fsSL -o "${SCRIPT_DIR}/bridge_ros1.py" \
-    "https://raw.githubusercontent.com/${REPO}/main/scripts/bridge_ros1.py" 2>/dev/null && \
-    chmod +x "${SCRIPT_DIR}/bridge_ros1.py" || true
-
-  cat > "${SERVICE_DIR}/car_bridge.service" << EOF
-[Unit]
-Description=ROS Car Bridge (reads /tmp/edge_bridge_cmd)
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/bin/bash -c "VER=\$(ls /opt/ros/ 2>/dev/null | head -1); source /opt/ros/\$VER/setup.bash 2>/dev/null; exec ${ROS_PYTHON} ${SCRIPT_DIR}/bridge_ros2.py"
-Restart=always
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-  if command -v systemctl &>/dev/null; then
-    systemctl daemon-reload
-    systemctl enable car_bridge
-    systemctl restart car_bridge 2>/dev/null || true
-    echo "  -> car_bridge.service installed and started"
-  fi
-
-  echo "  -> ROS bridge enabled in config (ros.enabled=true)"
-  echo "  -> car_bridge.service manages bridge lifecycle (separate from edge-agent)"
 fi
 
 echo ""

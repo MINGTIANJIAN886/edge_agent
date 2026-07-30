@@ -82,15 +82,16 @@ type Inference struct {
 }
 
 type ROSConfig struct {
-	Enabled          bool    `yaml:"enabled"`
-	BridgeScript1    string  `yaml:"bridge_script_ros1"`
-	BridgeScript2    string  `yaml:"bridge_script_ros2"`
-	PythonBin        string  `yaml:"bridge_python"`
-	MaxLinearSpeed   float64 `yaml:"car_max_linear_speed"`
-	MaxAngularSpeed  float64 `yaml:"car_max_angular_speed"`
-	SafetyWatchdog   int     `yaml:"safety_watchdog_timeout"`
-	CmdVelTopic      string  `yaml:"cmd_vel_topic"`
-	BridgeResultTopic string `yaml:"bridge_result_topic"`
+	Enabled           bool    `yaml:"enabled"`
+	BridgeScript1     string  `yaml:"bridge_script_ros1"`
+	BridgeScript2     string  `yaml:"bridge_script_ros2"`
+	PythonBin         string  `yaml:"bridge_python"`
+	MaxLinearSpeed    float64 `yaml:"car_max_linear_speed"`
+	MaxAngularSpeed   float64 `yaml:"car_max_angular_speed"`
+	SafetyWatchdog    int     `yaml:"safety_watchdog_timeout"`
+	CmdVelTopic       string  `yaml:"mqtt_cmd_vel_topic"`
+	RosCmdVelTopic    string  `yaml:"ros_cmd_vel_topic"`
+	BridgeResultTopic string  `yaml:"bridge_result_topic"`
 }
 
 func Load(path string) (*Config, error) {
@@ -110,5 +111,12 @@ func (c *Config) Save(path string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0600)
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpPath, 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }

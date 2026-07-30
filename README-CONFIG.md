@@ -55,7 +55,8 @@ ros:
   car_max_linear_speed: 2.0
   car_max_angular_speed: 3.14
   safety_watchdog_timeout: 5
-  cmd_vel_topic: "edge/pi-001/car/cmd_vel"
+  mqtt_cmd_vel_topic: "edge/pi-001/car/cmd_vel"
+  ros_cmd_vel_topic: "/cmd_vel"
   bridge_result_topic: "edge/pi-001/bridge/result"
 
 auth:

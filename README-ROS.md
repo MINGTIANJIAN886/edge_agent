@@ -28,7 +28,18 @@ ros:
   car_max_linear_speed: 2.0
   car_max_angular_speed: 3.14
   safety_watchdog_timeout: 5
+  mqtt_cmd_vel_topic: "edge/pi-001/car/cmd_vel"
+  ros_cmd_vel_topic: "/cmd_vel"
+  bridge_result_topic: "edge/pi-001/bridge/result"
+  ```
+
+环境变量:
+```bash
+ROS_VERSION=1          # 1=ROS1, 2=ROS2, auto=自动检测
+ROS_DISTRO=noetic       # 指定 ROS 发行版名称
+ROS_CMD_VEL_TOPIC=/limo/cmd_vel  # 自定义 ROS cmd_vel 话题
 ```
+
 
 ## 桥接生命周期
 
