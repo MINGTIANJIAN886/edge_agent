@@ -1,0 +1,10 @@
+device_id: jetson-r32-01
+device_profile: jetson-r32
+
+runtime:
+  ros_setup: /opt/ros/melodic/setup.bash
+  workspace_setup: /home/agilex/agilex_ws/devel/setup.bash
+
+ros:
+  enabled: true
+  cmd_vel_topic: /cmd_vel

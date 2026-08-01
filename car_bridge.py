@@ -7,13 +7,16 @@ import os
 import signal
 import threading
 
-BROKER = "ca15b49bc8b442638f0cade1e45585ce.s1.eu.hivemq.cloud"
-PORT = 8883
-CAFILE = "/etc/ssl/certs/ca-certificates.crt"
-USER = "liyankun"
-PASS = "liyankun152455A"
-TOPIC = "edge/pi-001/car/command"
-RESULT_TOPIC = "edge/pi-001/car/result"
+BROKER = os.environ.get("MQTT_BROKER", "ca15b49bc8b442638f0cade1e45585ce.s1.eu.hivemq.cloud")
+PORT = int(os.environ.get("MQTT_PORT", "8883"))
+CAFILE = os.environ.get("MQTT_CAFILE", "/etc/ssl/certs/ca-certificates.crt")
+USER = os.environ.get("MQTT_USER", "liyankun")
+PASS = os.environ.get("MQTT_PASS", "")
+TOPIC = os.environ.get("MQTT_CAR_TOPIC", "edge/pi-001/car/command")
+RESULT_TOPIC = os.environ.get("MQTT_CAR_RESULT_TOPIC", "edge/pi-001/car/result")
+
+if not PASS:
+    raise RuntimeError("MQTT_PASS environment variable is required")
 
 DIRECTION_MAP = {
     "forward":  (1.0, 0.0),

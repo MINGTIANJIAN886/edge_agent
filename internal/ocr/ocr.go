@@ -19,8 +19,11 @@ type TextEntry struct {
 	BBox       [][]float64 `json:"bbox"`
 }
 
-func RunOCR(scriptPath string, confThreshold float64) (*OCRResult, error) {
-	cmd := exec.Command("python3", scriptPath,
+func RunOCR(pythonBin, scriptPath string, confThreshold float64) (*OCRResult, error) {
+	if pythonBin == "" {
+		pythonBin = "python3"
+	}
+	cmd := exec.Command(pythonBin, scriptPath,
 		"--conf", fmt.Sprintf("%.2f", confThreshold),
 	)
 	output, err := cmd.Output()

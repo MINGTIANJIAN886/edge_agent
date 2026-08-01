@@ -3,12 +3,16 @@
 import paho.mqtt.client as mqtt
 import base64
 import json
+import os
 
-BROKER = "ca15b49bc8b442638f0cade1e45585ce.s1.eu.hivemq.cloud"
-PORT = 8883
-USER = "liyankun"
-PASS = "liyankun152455A"
-TOPIC = "edge/pi-001/filetransfer"
+BROKER = os.environ.get("MQTT_BROKER", "ca15b49bc8b442638f0cade1e45585ce.s1.eu.hivemq.cloud")
+PORT = int(os.environ.get("MQTT_PORT", "8883"))
+USER = os.environ.get("MQTT_USER", "liyankun")
+PASS = os.environ.get("MQTT_PASS", "")
+TOPIC = os.environ.get("MQTT_FILE_TOPIC", "edge/pi-001/filetransfer")
+
+if not PASS:
+    raise RuntimeError("MQTT_PASS environment variable is required")
 
 chunks = {}
 total_chunks = 0

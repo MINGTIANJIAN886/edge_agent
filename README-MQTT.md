@@ -8,7 +8,7 @@
 BROKER="ca15b49bc8b442638f0cade1e45585ce.s1.eu.hivemq.cloud"
 PORT=8883
 USER="liyankun"
-PASS="liyankun152455A"
+PASS="${MQTT_PASS:?export MQTT_PASS first}"
 ```
 
 ## 下载文件
@@ -17,10 +17,10 @@ PASS="liyankun152455A"
 mosquitto_pub -h "$BROKER" -p $PORT --cafile /etc/ssl/certs/ca-certificates.crt \
   -u "$USER" -P "$PASS" \
   -t "edge/pi-001/download" \
-  -m '{"url":"https://example.com/file.bin","dest_dir":"/home/pi/downloads","dest_name":"file.bin"}'
+  -m '{"url":"https://example.com/file.bin","dest_dir":"models","dest_name":"file.bin"}'
 ```
 
-结果返回到 `edge/pi-001/download/result`。
+文件只能写入配置的 `download_dir` 及其子目录，结果返回到 `edge/pi-001/download/result`。
 
 ## 执行命令
 
@@ -32,6 +32,50 @@ mosquitto_pub -h "$BROKER" -p $PORT --cafile /etc/ssl/certs/ca-certificates.crt 
 ```
 
 结果返回到 `edge/pi-001/command/result`。
+
+远程命令会自动加载配置中的 `runtime.ros_setup` 和
+`runtime.workspace_setup`。因此不同 Raspberry Pi、Jetson R32 和 Jetson
+Orin 可以使用同一个命令接口，无需在每条命令前重复 `source setup.bash`。
+
+### 启动 ROS 节点
+
+持续运行的节点建议使用已有 systemd 服务：
+
+```json
+{"id":"start-base","command":"systemctl start limo-base.service","timeout":15}
+```
+
+也可以在已配置的 ROS 工作空间中启动 launch 文件：
+
+```json
+{"id":"start-launch","command":"nohup roslaunch limo_bringup limo_start.launch >/var/log/limo-launch.log 2>&1 </dev/null &","timeout":10}
+```
+
+ROS2 示例：
+
+```json
+{"id":"start-nav","command":"nohup ros2 launch nav2_bringup navigation_launch.py >/var/log/nav2-launch.log 2>&1 </dev/null &","timeout":10}
+```
+
+### 直接发布 `/cmd_vel`
+
+ROS1：
+
+```json
+{"id":"move-ros1","command":"rostopic pub -1 /cmd_vel geometry_msgs/Twist '{linear: {x: 0.2}, angular: {z: 0.0}}'","timeout":10}
+```
+
+ROS2：
+
+```json
+{"id":"move-ros2","command":"ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist '{linear: {x: 0.2}, angular: {z: 0.0}}'","timeout":10}
+```
+
+如果已启用 bridge，优先使用 `car_cmd_vel`，它会自动限制速度并启用安全停车看门狗：
+
+```json
+{"id":"move-safe","method":"car_cmd_vel","params":{"linear_x":0.2,"angular_z":0.0}}
+```
 
 ## 设备信息
 
@@ -87,7 +131,6 @@ mosquitto_sub -h "$BROKER" -p $PORT --cafile /etc/ssl/certs/ca-certificates.crt 
 | `ros_topic_echo` | 订阅话题返回最新消息 |
 | `ros_service_call` | 调用 ROS 服务 |
 | `ros_param_get` / `ros_param_set` | ROS 参数读写 |
-| `bridge_start` / `bridge_stop` / `bridge_status` | 桥接生命周期管理 |
 | `car_cmd_vel` | 小车速度指令 |
 | `car_emergency_stop` | 急停 |
 

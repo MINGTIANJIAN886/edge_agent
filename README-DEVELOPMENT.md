@@ -23,17 +23,11 @@ make build-all       # 全部平台
 ## 发布
 
 ```bash
-make release
+git tag v1.1.0
+git push origin v1.1.0
 ```
 
-## Docker
-
-```bash
-docker run -d --name edge-agent \
-  -v /etc/agent:/etc/agent \
-  --network host \
-  ghcr.io/MINGTIANJIAN886/edge-agent:latest
-```
+推送 `v*` 标签后，GitHub Actions 会运行检查、构建三种架构并发布带 SHA256 校验的 Release。普通 `main` 提交和 PR 只做检查与构建，不覆盖已有 Release。
 
 ## 系统管理
 

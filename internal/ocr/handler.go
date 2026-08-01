@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MINGTIANJIAN886/edge_agent/internal/config"
 	mqtt "github.com/eclipse/paho.mqtt.golang"
-	"github.com/user/agent/internal/config"
 )
 
 type CommandPayload struct {
@@ -77,7 +77,7 @@ func (c *Controller) Start(interval int) {
 		for {
 			select {
 			case <-ticker.C:
-				result, err := RunOCR(c.cfg.ScriptPath, c.cfg.ConfThreshold)
+				result, err := RunOCR(c.cfg.PythonBin, c.cfg.ScriptPath, c.cfg.ConfThreshold)
 				publishResult(c.client, c.cfg.ResultTopic, c.deviceID, "timer", result, err)
 			case <-ctx.Done():
 				log.Println("OCR scheduler stopped")
@@ -105,7 +105,7 @@ func (c *Controller) Stop() {
 }
 
 func (c *Controller) Snapshot() {
-	result, err := RunOCR(c.cfg.ScriptPath, c.cfg.ConfThreshold)
+	result, err := RunOCR(c.cfg.PythonBin, c.cfg.ScriptPath, c.cfg.ConfThreshold)
 	publishResult(c.client, c.cfg.ResultTopic, c.deviceID, "command", result, err)
 }
 
@@ -141,8 +141,8 @@ func (c *Controller) SubscribeCommands() {
 	}
 }
 
-func RunOCRFromMCP(scriptPath string, confThreshold float64) (interface{}, error) {
-	result, err := RunOCR(scriptPath, confThreshold)
+func RunOCRFromMCP(pythonBin, scriptPath string, confThreshold float64) (interface{}, error) {
+	result, err := RunOCR(pythonBin, scriptPath, confThreshold)
 	if err != nil {
 		return nil, err
 	}

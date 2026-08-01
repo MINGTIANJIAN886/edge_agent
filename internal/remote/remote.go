@@ -1,13 +1,12 @@
 package remote
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
 	"log"
-	"os/exec"
 	"time"
 
+	"github.com/MINGTIANJIAN886/edge_agent/internal/command"
+	"github.com/MINGTIANJIAN886/edge_agent/internal/config"
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 )
 
@@ -27,49 +26,19 @@ type CommandResult struct {
 	Duration string `json:"duration"`
 }
 
-func ExecuteCommand(req CommandRequest) CommandResult {
-	start := time.Now()
-
-	timeout := req.Timeout
-	if timeout <= 0 {
-		timeout = 30
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "sh", "-c", req.Command)
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-
-	result := CommandResult{
+func ExecuteCommand(req CommandRequest, runtimeCfg config.Runtime) CommandResult {
+	execResult := command.Execute(req.Command, req.Timeout, runtimeCfg)
+	return CommandResult{
 		ID:       req.ID,
-		Stdout:   stdout.String(),
-		Stderr:   stderr.String(),
-		Duration: time.Since(start).Round(time.Millisecond).String(),
+		Success:  execResult.Success,
+		Stdout:   execResult.Stdout,
+		Stderr:   execResult.Stderr,
+		ExitCode: execResult.ExitCode,
+		Duration: execResult.Duration.String(),
 	}
-
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			result.ExitCode = exitErr.ExitCode()
-		} else {
-			result.ExitCode = -1
-			result.Stderr = err.Error()
-		}
-		result.Success = false
-	} else {
-		result.Success = true
-		result.ExitCode = 0
-	}
-
-	return result
 }
 
-func SubscribeCommands(client mqtt.Client, deviceID string, topic string) {
+func SubscribeCommands(client mqtt.Client, deviceID string, topic string, runtimeCfg config.Runtime) {
 	token := client.Subscribe(topic, 1, func(_ mqtt.Client, msg mqtt.Message) {
 		var req CommandRequest
 		if err := json.Unmarshal(msg.Payload(), &req); err != nil {
@@ -78,7 +47,7 @@ func SubscribeCommands(client mqtt.Client, deviceID string, topic string) {
 		}
 
 		log.Printf("executing command: %s (id=%s, timeout=%d)", req.Command, req.ID, req.Timeout)
-		result := ExecuteCommand(req)
+		result := ExecuteCommand(req, runtimeCfg)
 		result.DeviceID = deviceID
 
 		data, err := json.Marshal(result)

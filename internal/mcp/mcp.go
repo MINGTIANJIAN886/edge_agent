@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,15 +9,19 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
+	"github.com/MINGTIANJIAN886/edge_agent/internal/bridge"
+	"github.com/MINGTIANJIAN886/edge_agent/internal/command"
+	"github.com/MINGTIANJIAN886/edge_agent/internal/config"
+	"github.com/MINGTIANJIAN886/edge_agent/internal/download"
+	"github.com/MINGTIANJIAN886/edge_agent/internal/ocr"
+	"github.com/MINGTIANJIAN886/edge_agent/internal/ota"
+	"github.com/MINGTIANJIAN886/edge_agent/internal/ros"
 	mqtt "github.com/eclipse/paho.mqtt.golang"
-	"github.com/user/agent/internal/config"
-	"github.com/user/agent/internal/ocr"
-	"github.com/user/agent/internal/ota"
-	"github.com/user/agent/internal/ros"
 )
 
 type RegisterRequest struct {
@@ -54,14 +57,14 @@ type SchemaProperty struct {
 }
 
 type MCPRegisterMsg struct {
-	DeviceID string          `json:"device_id"`
+	DeviceID string           `json:"device_id"`
 	Tools    []ToolDefinition `json:"tools"`
 }
 
 type MCPCallRequest struct {
-	ID      string                 `json:"id"`
-	Method  string                 `json:"method"`
-	Params  map[string]interface{} `json:"params"`
+	ID     string                 `json:"id"`
+	Method string                 `json:"method"`
+	Params map[string]interface{} `json:"params"`
 }
 
 type MCPCallResponse struct {
@@ -109,7 +112,7 @@ func Register(apiURL, deviceID, hostname string) error {
 	return nil
 }
 
-func PublishTools(client mqtt.Client, deviceID, topic string, rosVer ros.Version) {
+func PublishTools(client mqtt.Client, deviceID, topic string, rosVer ros.Version, bridgeEnabled bool) {
 	tools := []ToolDefinition{
 		{
 			Name:        "device_info",
@@ -266,18 +269,12 @@ func PublishTools(client mqtt.Client, deviceID, topic string, rosVer ros.Version
 					Required: []string{"name", "value"},
 				},
 			},
-			{
-				Name: "bridge_start", Description: "Start the ROS-MQTT bridge node",
-				InputSchema: InputSchema{Type: "object", Properties: map[string]SchemaProperty{}},
-			},
-			{
-				Name: "bridge_stop", Description: "Stop the ROS-MQTT bridge node",
-				InputSchema: InputSchema{Type: "object", Properties: map[string]SchemaProperty{}},
-			},
-			{
-				Name: "bridge_status", Description: "Check if the ROS-MQTT bridge is running",
-				InputSchema: InputSchema{Type: "object", Properties: map[string]SchemaProperty{}},
-			},
+		}
+		tools = append(tools, rosTools...)
+	}
+
+	if bridgeEnabled {
+		carTools := []ToolDefinition{
 			{
 				Name: "car_cmd_vel", Description: "Send velocity command to robot car",
 				InputSchema: InputSchema{
@@ -295,7 +292,7 @@ func PublishTools(client mqtt.Client, deviceID, topic string, rosVer ros.Version
 				InputSchema: InputSchema{Type: "object", Properties: map[string]SchemaProperty{}},
 			},
 		}
-		tools = append(tools, rosTools...)
+		tools = append(tools, carTools...)
 	}
 
 	msg := MCPRegisterMsg{
@@ -317,7 +314,13 @@ func PublishTools(client mqtt.Client, deviceID, topic string, rosVer ros.Version
 	}
 }
 
-func SubscribeCalls(client mqtt.Client, deviceID, callTopic, inferenceURL string, cfg *config.Config) {
+func SubscribeCalls(
+	client mqtt.Client,
+	deviceID, callTopic, inferenceURL string,
+	cfg *config.Config,
+	rosVer ros.Version,
+	bridgeMgr *bridge.Manager,
+) {
 	token := client.Subscribe(callTopic, 1, func(_ mqtt.Client, msg mqtt.Message) {
 		var req MCPCallRequest
 		if err := json.Unmarshal(msg.Payload(), &req); err != nil {
@@ -331,9 +334,9 @@ func SubscribeCalls(client mqtt.Client, deviceID, callTopic, inferenceURL string
 
 		switch req.Method {
 		case "device_info":
-			resp = handleDeviceInfo()
+			resp = handleDeviceInfo(cfg)
 		case "execute_command":
-			resp = handleExecuteCommand(req)
+			resp = handleExecuteCommand(cfg, req)
 		case "download_file":
 			resp = handleDownloadFile(cfg, client, deviceID, req)
 		case "restart_service":
@@ -348,6 +351,73 @@ func SubscribeCalls(client mqtt.Client, deviceID, callTopic, inferenceURL string
 			resp = handleCheckUpdate(cfg, client, deviceID, req)
 		case "rollback_model":
 			resp = handleRollback(cfg, client, deviceID, req)
+		case "ros_version":
+			resp = MCPCallResponse{ID: req.ID, Success: rosVer != ros.None, Result: rosVer.String()}
+		case "ros_node_list":
+			result, err := ros.NodeList(rosVer)
+			resp = handleROSResult(req.ID, result, err)
+		case "ros_topic_list":
+			result, err := ros.TopicList(rosVer)
+			resp = handleROSResult(req.ID, result, err)
+		case "ros_service_list":
+			result, err := ros.ServiceList(rosVer)
+			resp = handleROSResult(req.ID, result, err)
+		case "ros_topic_echo":
+			topic, _ := req.Params["topic"].(string)
+			if topic == "" {
+				resp = MCPCallResponse{ID: req.ID, Success: false, Error: "missing topic"}
+			} else {
+				result, err := ros.TopicEchoOnce(rosVer, topic)
+				resp = handleROSResult(req.ID, result, err)
+			}
+		case "ros_service_call":
+			service, _ := req.Params["service"].(string)
+			msgType, _ := req.Params["msg_type"].(string)
+			args, _ := req.Params["args"].(string)
+			if service == "" {
+				resp = MCPCallResponse{ID: req.ID, Success: false, Error: "missing service"}
+			} else {
+				result, err := ros.ServiceCall(rosVer, service, msgType, args)
+				resp = handleROSResult(req.ID, result, err)
+			}
+		case "ros_param_get":
+			name, _ := req.Params["name"].(string)
+			if name == "" {
+				resp = MCPCallResponse{ID: req.ID, Success: false, Error: "missing name"}
+			} else {
+				result, err := ros.ParamGet(rosVer, name)
+				resp = handleROSResult(req.ID, result, err)
+			}
+		case "ros_param_set":
+			name, _ := req.Params["name"].(string)
+			value, _ := req.Params["value"].(string)
+			if name == "" {
+				resp = MCPCallResponse{ID: req.ID, Success: false, Error: "missing name"}
+			} else if err := ros.ParamSet(rosVer, name, value); err != nil {
+				resp = MCPCallResponse{ID: req.ID, Success: false, Error: err.Error()}
+			} else {
+				resp = MCPCallResponse{ID: req.ID, Success: true, Result: "parameter updated"}
+			}
+		case "car_cmd_vel":
+			if bridgeMgr == nil {
+				resp = MCPCallResponse{ID: req.ID, Success: false, Error: "ROS bridge is disabled"}
+				break
+			}
+			linearX, _ := req.Params["linear_x"].(float64)
+			angularZ, _ := req.Params["angular_z"].(float64)
+			if err := bridgeMgr.SendVelocity(linearX, angularZ); err != nil {
+				resp = MCPCallResponse{ID: req.ID, Success: false, Error: err.Error()}
+			} else {
+				resp = MCPCallResponse{ID: req.ID, Success: true, Result: "velocity command sent"}
+			}
+		case "car_emergency_stop":
+			if bridgeMgr == nil {
+				resp = MCPCallResponse{ID: req.ID, Success: false, Error: "ROS bridge is disabled"}
+			} else if err := bridgeMgr.StopVehicle(); err != nil {
+				resp = MCPCallResponse{ID: req.ID, Success: false, Error: err.Error()}
+			} else {
+				resp = MCPCallResponse{ID: req.ID, Success: true, Result: "emergency stop sent"}
+			}
 		default:
 			resp = MCPCallResponse{
 				ID:      req.ID,
@@ -377,60 +447,75 @@ func shell(cmd string) string {
 	return strings.TrimSpace(string(out))
 }
 
-func handleDeviceInfo() MCPCallResponse {
+func handleDeviceInfo(cfg *config.Config) MCPCallResponse {
 	hostname, _ := os.Hostname()
 	info := map[string]interface{}{
-		"hostname":  hostname,
-		"platform":  runtime.GOOS + "/" + runtime.GOARCH,
-		"go_version": runtime.Version(),
-		"cpu":       shell("nproc || echo 1"),
-		"memory":    shell("free -h | awk 'NR==2{print \"total=\"$2\" used=\"$3\" free=\"$4}'"),
-		"disk":      shell("df -h / | awk 'NR==2{print \"total=\"$2\" used=\"$3\" avail=\"$4\" usage=\"$5}'"),
-		"uptime":    shell("uptime -p"),
-		"load":      shell("cat /proc/loadavg | awk '{print \"1m=\"$1\" 5m=\"$2\" 15m=\"$3}'"),
-		"kernel":    shell("uname -r"),
-		"timestamp": time.Now().Unix(),
+		"hostname":        hostname,
+		"platform":        runtime.GOOS + "/" + runtime.GOARCH,
+		"device_profile":  cfg.DeviceProfile,
+		"ros_setup":       cfg.Runtime.ROSSetup,
+		"workspace_setup": cfg.Runtime.WorkspaceSetup,
+		"go_version":      runtime.Version(),
+		"cpu":             shell("nproc || echo 1"),
+		"memory":          shell("free -h | awk 'NR==2{print \"total=\"$2\" used=\"$3\" free=\"$4}'"),
+		"disk":            shell("df -h / | awk 'NR==2{print \"total=\"$2\" used=\"$3\" avail=\"$4\" usage=\"$5}'"),
+		"uptime":          shell("uptime -p"),
+		"load":            shell("cat /proc/loadavg | awk '{print \"1m=\"$1\" 5m=\"$2\" 15m=\"$3}'"),
+		"kernel":          shell("uname -r"),
+		"timestamp":       time.Now().Unix(),
 	}
 	return MCPCallResponse{Success: true, Result: info}
 }
 
-func handleExecuteCommand(req MCPCallRequest) MCPCallResponse {
-	cmd, _ := req.Params["command"].(string)
-	if cmd == "" {
+func handleExecuteCommand(cfg *config.Config, req MCPCallRequest) MCPCallResponse {
+	commandText, _ := req.Params["command"].(string)
+	if commandText == "" {
 		return MCPCallResponse{Success: false, Error: "missing command"}
 	}
 	timeout := 30
 	if t, ok := req.Params["timeout"].(float64); ok {
 		timeout = int(t)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "sh", "-c", cmd).Output()
-	if err != nil {
-		return MCPCallResponse{Success: false, Error: err.Error(), Result: string(out)}
+	result := command.Execute(commandText, timeout, cfg.Runtime)
+	if !result.Success {
+		return MCPCallResponse{
+			Success: false,
+			Error:   result.Stderr,
+			Result:  result.Stdout,
+		}
 	}
-	return MCPCallResponse{Success: true, Result: string(out)}
+	return MCPCallResponse{Success: true, Result: result.Stdout}
 }
 
 func handleDownloadFile(cfg *config.Config, client mqtt.Client, deviceID string, req MCPCallRequest) MCPCallResponse {
-	url, _ := req.Params["url"].(string)
-	destPath, _ := req.Params["dest_path"].(string)
-	if url == "" {
+	sourceURL, _ := req.Params["url"].(string)
+	requestedPath, _ := req.Params["dest_path"].(string)
+	if sourceURL == "" {
 		return MCPCallResponse{Success: false, Error: "missing url"}
 	}
-	if destPath == "" {
-		destPath = cfg.DownloadDir + "/" + url[strings.LastIndex(url, "/")+1:]
+
+	requestedDir, requestedName := "", ""
+	if requestedPath != "" {
+		requestedDir, requestedName = filepath.Split(requestedPath)
 	}
-	// use the download package's internal downloadFile
-	// we replicate the logic here since it's unexported
-	log.Printf("mcp download: %s -> %s", url, destPath)
-	// trigger via the download subscription topic
-	// for now, execute as a shell curl
-	out, err := exec.Command("sh", "-c", fmt.Sprintf("mkdir -p $(dirname '%s') && curl -fsSL -o '%s' '%s' && ls -lh '%s'", destPath, destPath, url, destPath)).CombinedOutput()
+	destPath, err := download.ResolveDestination(cfg.DownloadDir, requestedDir, requestedName, sourceURL)
 	if err != nil {
-		return MCPCallResponse{Success: false, Error: string(out)}
+		return MCPCallResponse{ID: req.ID, Success: false, Error: err.Error()}
 	}
-	return MCPCallResponse{Success: true, Result: strings.TrimSpace(string(out))}
+
+	log.Printf("mcp download: %s -> %s", sourceURL, destPath)
+	size, err := download.DownloadFile(sourceURL, destPath)
+	if err != nil {
+		return MCPCallResponse{ID: req.ID, Success: false, Error: err.Error()}
+	}
+	return MCPCallResponse{
+		ID:      req.ID,
+		Success: true,
+		Result: map[string]interface{}{
+			"path": destPath,
+			"size": size,
+		},
+	}
 }
 
 func handleRestartService(req MCPCallRequest) MCPCallResponse {
@@ -491,7 +576,7 @@ func handleRunOCR(cfg *config.Config, req MCPCallRequest) MCPCallResponse {
 	if t, ok := req.Params["conf_threshold"].(float64); ok {
 		confThreshold = t
 	}
-	result, err := ocr.RunOCRFromMCP(scriptPath, confThreshold)
+	result, err := ocr.RunOCRFromMCP(cfg.OCR.PythonBin, scriptPath, confThreshold)
 	if err != nil {
 		return MCPCallResponse{ID: req.ID, Success: false, Error: err.Error()}
 	}
@@ -512,4 +597,11 @@ func handleRollback(cfg *config.Config, client mqtt.Client, deviceID string, req
 		return MCPCallResponse{ID: req.ID, Success: false, Error: err.Error()}
 	}
 	return MCPCallResponse{ID: req.ID, Success: true, Result: msg}
+}
+
+func handleROSResult[T any](id string, result T, err error) MCPCallResponse {
+	if err != nil {
+		return MCPCallResponse{ID: id, Success: false, Error: err.Error()}
+	}
+	return MCPCallResponse{ID: id, Success: true, Result: result}
 }

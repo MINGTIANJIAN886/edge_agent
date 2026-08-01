@@ -6,11 +6,14 @@ import time
 import sys
 import os
 
-BROKER = "ca15b49bc8b442638f0cade1e45585ce.s1.eu.hivemq.cloud"
-PORT = 8883
-USER = "liyankun"
-PASS = "liyankun152455A"
+BROKER = os.environ.get("MQTT_BROKER", "ca15b49bc8b442638f0cade1e45585ce.s1.eu.hivemq.cloud")
+PORT = int(os.environ.get("MQTT_PORT", "8883"))
+USER = os.environ.get("MQTT_USER", "liyankun")
+PASS = os.environ.get("MQTT_PASS", "")
 CHUNK_SIZE = 512 * 1024  # 512KB chunks
+
+if not PASS:
+    raise RuntimeError("MQTT_PASS environment variable is required")
 
 model_path = sys.argv[1] if len(sys.argv) > 1 else "/home/l22/桌面/yolo11/best_ncnn_model/model.ncnn.bin"
 topic = sys.argv[2] if len(sys.argv) > 2 else "edge/pi-001/filetransfer"
