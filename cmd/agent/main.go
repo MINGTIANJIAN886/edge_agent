@@ -155,7 +155,11 @@ func main() {
 
 	ota.InitRollbackState(cfg.OTA)
 	go heartbeat.Start(client, cfg.DeviceID, cfg.Heartbeat, cfg.MQTT.Topic.Heartbeat)
-	go ota.StartPeriodicCheck(cfg.OTA, client, cfg.DeviceID, cfg.MQTT.Topic.Result)
+	if cfg.OTA.AutoCheck {
+		go ota.StartPeriodicCheck(cfg.OTA, client, cfg.DeviceID, cfg.MQTT.Topic.Result)
+	} else {
+		log.Printf("OTA: auto_check disabled, updates triggered via MQTT only")
+	}
 	go mqttWatchdog(client)
 
 	sigCh := make(chan os.Signal, 1)

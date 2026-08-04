@@ -191,8 +191,13 @@ func PublishTools(client mqtt.Client, deviceID, topic string, rosVer ros.Version
 			Name:        "check_update",
 			Description: "Check for model updates from the OTA server and apply if available",
 			InputSchema: InputSchema{
-				Type:       "object",
-				Properties: map[string]SchemaProperty{},
+				Type: "object",
+				Properties: map[string]SchemaProperty{
+					"task":              {Type: "string", Description: "Requested task, e.g. vehicle_detect"},
+					"tags":              {Type: "array", Description: "Optional scenario tags for matching"},
+					"require_accuracy":  {Type: "number", Description: "Minimum accuracy required (0-1)"},
+					"max_latency":       {Type: "number", Description: "Maximum inference latency in ms"},
+				},
 			},
 		},
 		{
@@ -499,7 +504,24 @@ func handleRunOCR(cfg *config.Config, req MCPCallRequest) MCPCallResponse {
 }
 
 func handleCheckUpdate(cfg *config.Config, client mqtt.Client, deviceID string, req MCPCallRequest) MCPCallResponse {
-	msg, err := ota.CheckNow(cfg.OTA, client, deviceID, cfg.MQTT.Topic.Result)
+	opts := ota.CheckOptions{}
+	if task, ok := req.Params["task"].(string); ok {
+		opts.Task = task
+	}
+	if tags, ok := req.Params["tags"].([]interface{}); ok {
+		for _, t := range tags {
+			if s, ok := t.(string); ok {
+				opts.TaskTags = append(opts.TaskTags, s)
+			}
+		}
+	}
+	if v, ok := req.Params["require_accuracy"].(float64); ok {
+		opts.RequireAccuracy = v
+	}
+	if v, ok := req.Params["max_latency"].(float64); ok {
+		opts.MaxLatencyMS = v
+	}
+	msg, err := ota.CheckNow(cfg.OTA, client, deviceID, cfg.MQTT.Topic.Result, opts)
 	if err != nil {
 		return MCPCallResponse{ID: req.ID, Success: false, Error: err.Error()}
 	}

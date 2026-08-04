@@ -65,6 +65,30 @@ type OTA struct {
 	ModelDir            string `yaml:"model_dir"`             // base dir for versioned models
 	CurrentSymlink      string `yaml:"current_symlink"`       // symlink path for "current" model
 	BackupCount         int    `yaml:"backup_count"`          // number of old versions to keep
+	AutoCheck           bool   `yaml:"auto_check"`            // true=periodic auto update; false=MQTT triggered only
+	Task                string `yaml:"task"`                  // default task for this device, empty = not bound
+	DeviceCap           DeviceCap `yaml:"device_cap"`         // device capability, auto-detected unless overridden
+	Filter              OTAFilter `yaml:"filter"`             // candidate selection rules
+}
+
+// DeviceCap describes the deployment capability of this device. Zero
+// values in the config mean the value is auto-detected at startup.
+type DeviceCap struct {
+	CPU    int  `yaml:"cpu_cores"`  // number of CPU cores, 0 = auto-detect
+	MemMB  int  `yaml:"memory_mb"`  // total memory in MB, 0 = auto-detect
+	HasGPU bool `yaml:"has_gpu"`    // whether a GPU accelerator is present
+}
+
+// OTAFilter holds the static selection rules. Zero threshold values mean
+// the corresponding dimension is not enforced.
+type OTAFilter struct {
+	MaxSizeMB      float64 `yaml:"max_size_mb"`      // max model size in MB, 0 = unlimited
+	MinAccuracy    float64 `yaml:"min_accuracy"`     // min accuracy threshold, 0 = unlimited
+	RequiredFormat string  `yaml:"required_format"`  // e.g. "ncnn", empty = any
+	MaxLatencyMS   float64 `yaml:"max_latency_ms"`   // max inference latency ms, 0 = unlimited
+	PreferAccuracy bool    `yaml:"prefer_accuracy"`  // true = pick highest accuracy, false = pick latest version
+	TaskMatchBonus float64 `yaml:"task_match_bonus"` // fixed bonus for task strong match, 0 = disabled
+	TagBonus       float64 `yaml:"tag_bonus"`        // fixed bonus per overlapping tag, 0 = disabled
 }
 
 type OCR struct {
