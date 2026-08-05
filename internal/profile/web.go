@@ -655,6 +655,15 @@ function render(ev) {
     for (const [k, l] of spec) {
       if (c.details && c.details[k] !== undefined) rows.push([l, c.details[k]]);
     }
+    const tps = c.details && c.details.topics;
+    if (tps && typeof tps === 'object' && !Array.isArray(tps)) {
+      for (const [t, ok] of Object.entries(tps)) {
+        rows.push(['话题 ' + t, ok ? 'True' : 'False']);
+      }
+      if (Array.isArray(c.details.topics_all)) {
+        rows.push(['全部话题', c.details.topics_all.length ? c.details.topics_all.join(', ') : '(无活跃话题)']);
+      }
+    }
     const card = document.createElement('div');
     card.className = 'cap';
     card.innerHTML =
