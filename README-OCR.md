@@ -73,11 +73,11 @@ sudo journalctl -u agent -f
 
 mosquitto_pub -h "ca15b49bc8b442638f0cade1e45585ce.s1.eu.hivemq.cloud" \
   -p 8883 --cafile /etc/ssl/certs/ca-certificates.crt \
-  -u "liyankun" -P "liyankun152455A" \
+  -u "用户名 " -P "密码" \
   -t "edge/pi-001/ocr/command" -m '{}'
 
 mosquitto_sub -h "ca15b49bc8b442638f0cade1e45585ce.s1.eu.hivemq.cloud" \
   -p 8883 --cafile /etc/ssl/certs/ca-certificates.crt \
-  -u "liyankun" -P "liyankun152455A" \
+  -u "用户名" -P "密码" \
   -t "edge/pi-001/ocr/result" -v
 ```
