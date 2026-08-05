@@ -5,10 +5,10 @@
 ## 通用参数
 
 ```bash
-BROKER="ca15b49bc8b442638f0cade1e45585ce.s1.eu.hivemq.cloud"
+BROKER=
 PORT=8883
-USER="liyankun"
-PASS="liyankun152455A"
+USER=
+PASS=
 ```
 
 ## 下载文件
