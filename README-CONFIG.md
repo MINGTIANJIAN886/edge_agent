@@ -14,8 +14,8 @@ mqtt:
   broker: "ca15b49bc8b442638f0cade1e45585ce.s1.eu.hivemq.cloud"
   port: 8883
   client_id: "agent-pi-001"
-  username: "liyankun"
-  password: "liyankun152455A"
+  username: 
+  password: 
   topic:
     command: "edge/pi-001/command"
     download: "edge/pi-001/download"
