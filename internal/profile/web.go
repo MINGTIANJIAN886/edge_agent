@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/user/agent/internal/mqttstats"
 )
 
 // WebServer serves a real-time capability dashboard:
@@ -24,11 +26,12 @@ type WebServer struct {
 	mgr      *ProbeManager
 	cam      *CameraStream
 	task     *TaskTracker
+	stats    *mqttstats.Tracker
 	DeviceID string
 }
 
-func NewWebServer(mgr *ProbeManager, deviceID string, cam *CameraStream, task *TaskTracker) *WebServer {
-	return &WebServer{mgr: mgr, cam: cam, task: task, DeviceID: deviceID}
+func NewWebServer(mgr *ProbeManager, deviceID string, cam *CameraStream, task *TaskTracker, stats *mqttstats.Tracker) *WebServer {
+	return &WebServer{mgr: mgr, cam: cam, task: task, stats: stats, DeviceID: deviceID}
 }
 
 func (w *WebServer) Handler() http.Handler {
@@ -65,6 +68,21 @@ func (w *WebServer) handleProfile(rw http.ResponseWriter, r *http.Request) {
 		model := w.task.Model()
 		if model.Model != "" || model.Version != "" {
 			out["model"] = model
+		}
+	}
+	if w.stats != nil {
+		s := w.stats.Sample()
+		n := len(s.In)
+		curIn, curOut := int64(0), int64(0)
+		if n > 0 {
+			curIn, curOut = s.In[n-1], s.Out[n-1]
+		}
+		out["mqtt_stats"] = map[string]interface{}{
+			"current_in_bps":  curIn,
+			"current_out_bps": curOut,
+			"total_in_bytes":  s.TotalIn,
+			"total_out_bytes": s.TotalOut,
+			"window_seconds":  n,
 		}
 	}
 	json.NewEncoder(rw).Encode(out)
@@ -267,6 +285,9 @@ func (w *WebServer) handleEvents(rw http.ResponseWriter, r *http.Request) {
 			if model.Model != "" || model.Version != "" {
 				out["model"] = model
 			}
+		}
+		if w.stats != nil {
+			out["stats"] = w.stats.Sample()
 		}
 		data, err := json.Marshal(out)
 		if err != nil {
@@ -557,6 +578,13 @@ const indexHTML = `<!DOCTYPE html>
       </div>
     </div>
 
+    <h2 class="sec">📡 MQTT 传输速率</h2>
+    <div class="card" id="mqttCard">
+      <h3 style="margin-bottom:12px;">最近 60 秒 MQTT 吞吐 (B/s · 蓝=上行 橙=下行 · 每秒采样)</h3>
+      <div id="mqttSummary" style="font-size:13px; color:#a5b4fc; margin-bottom:10px; font-family:monospace;">等待数据...</div>
+      <canvas id="mqttChart" height="220" style="width:100%; background:#0b1226; border-radius:10px;"></canvas>
+    </div>
+
     <h2 class="sec">🔍 能力探测</h2>
     <div class="caps" id="caps"></div>
 
@@ -675,6 +703,54 @@ function render(ev) {
       '<div class="btns"><button onclick="probeCap(\'' + esc(n) + '\')">重新探测</button></div>';
     grid.appendChild(card);
   }
+  if (ev.stats) drawStats(ev.stats);
+}
+const fmtBytes = n => n >= 1048576 ? (n / 1048576).toFixed(2) + ' MB'
+              : n >= 1024 ? (n / 1024).toFixed(1) + ' KB' : n + ' B';
+function drawStats(s) {
+  const cv = document.getElementById('mqttChart');
+  const title = document.getElementById('mqttSummary');
+  const n = s.in.length;
+  let curIn = 0, curOut = 0;
+  if (n > 0) { curIn = s.in[n - 1]; curOut = s.out[n - 1]; }
+  title.textContent =
+    '当前 上行 ' + fmtBytes(curIn) + '/s · 下行 ' + fmtBytes(curOut) + '/s' +
+    '     累计 上行 ' + fmtBytes(s.total_in_bytes) + ' · 下行 ' + fmtBytes(s.total_out_bytes);
+  if (!cv || typeof cv.getContext !== 'function') return;
+  const dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth, h = cv.clientHeight || 220;
+  cv.width = w * dpr; cv.height = h * dpr;
+  const ctx = cv.getContext('2d');
+  ctx.save(); ctx.scale(dpr, dpr);
+  const padL = 46, padR = 8, padT = 8, padB = 20;
+  const gw = w - padL - padR, gh = h - padT - padB;
+  const maxY = Math.max(1, ...s.in, ...s.out) * 1.1;
+  const X = i => n <= 1 ? padL + gw / 2 : padL + gw * i / (n - 1);
+  const Y = v => padT + gh - (v / maxY) * gh;
+  ctx.clearRect(0, 0, w, h);
+  ctx.strokeStyle = '#1e2a45'; ctx.fillStyle = '#5b6f95'; ctx.font = '10px monospace';
+  ctx.lineWidth = 1;
+  for (let g = 0; g <= 4; g++) {
+    const y = padT + gh * g / 4;
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke();
+    ctx.fillText(Math.round(maxY * (1 - g / 4)) + '', 4, y + 3);
+  }
+  const plot = (vals, color) => {
+    if (vals.length < 1) return;
+    ctx.strokeStyle = color; ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let i = 0; i < vals.length; i++) {
+      const x = X(i), y = Y(vals[i]);
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  };
+  plot(s.out, '#fb923c');
+  plot(s.in, '#38bdf8');
+  ctx.fillStyle = '#5b6f95';
+  ctx.fillText('60s', padL, h - 6);
+  ctx.fillText('now', w - padR - 14, h - 6);
+  ctx.restore();
 }
 async function probeCap(name) {
   await fetch('/probe?cap=' + encodeURIComponent(name) + '&force=1', { method: 'POST' });

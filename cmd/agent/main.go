@@ -8,7 +8,9 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -23,6 +25,7 @@ import (
 	"github.com/user/agent/internal/enroll"
 	"github.com/user/agent/internal/heartbeat"
 	"github.com/user/agent/internal/mcp"
+	"github.com/user/agent/internal/mqttstats"
 	"github.com/user/agent/internal/ocr"
 	"github.com/user/agent/internal/ota"
 	"github.com/user/agent/internal/profile"
@@ -139,6 +142,38 @@ func main() {
 	if tlsConfig != nil {
 		scheme = "ssl"
 	}
+
+	// MQTT transport statistics: every byte through the socket is
+	// counted and sampled into a per-second rate window for the
+	// dashboard. The custom open connection replaces paho's default
+	// dial so the counting wrapper can be inserted around the socket.
+	mqttStats := mqttstats.New(60)
+	opts.SetCustomOpenConnectionFn(func(uri *url.URL, o mqtt.ClientOptions) (net.Conn, error) {
+		conn, err := net.DialTimeout("tcp", uri.Host, 15*time.Second)
+		if err != nil {
+			return nil, err
+		}
+		if o.TLSConfig != nil {
+			// paho's default dialer derives ServerName from the broker
+			// address automatically; replicate that here (on a clone,
+			// never mutate the shared TLS config).
+			tcfg := o.TLSConfig.Clone()
+			if tcfg.ServerName == "" && !tcfg.InsecureSkipVerify {
+				tcfg.ServerName = uri.Hostname()
+			}
+			tconn := tls.Client(conn, tcfg)
+			if err := tconn.Handshake(); err != nil {
+				conn.Close()
+				return nil, err
+			}
+			conn = tconn
+		}
+		return mqttStats.Wrap(conn), nil
+	})
+	stopStats := make(chan struct{})
+	go mqttStats.Start(stopStats)
+	defer close(stopStats)
+
 	opts.AddBroker(fmt.Sprintf("%s://%s:%d", scheme, cfg.MQTT.Broker, cfg.MQTT.Port))
 	opts.SetClientID(cfg.MQTT.ClientID)
 	opts.SetUsername(username)
@@ -209,7 +244,7 @@ func main() {
 		log.Printf("OTA: auto_check disabled, updates triggered via MQTT only")
 	}
 	startProbeScheduler(cfg, probeMgr)
-	startProbeDashboard(cfg, probeMgr, camStream, taskTracker)
+	startProbeDashboard(cfg, probeMgr, camStream, taskTracker, mqttStats)
 	go mqttWatchdog(client)
 
 	sigCh := make(chan os.Signal, 1)
@@ -293,11 +328,11 @@ func startProbeScheduler(cfg *config.Config, mgr *profile.ProbeManager) {
 
 // startProbeDashboard serves the real-time capability dashboard if
 // web_listen is configured.
-func startProbeDashboard(cfg *config.Config, mgr *profile.ProbeManager, cam *profile.CameraStream, task *profile.TaskTracker) {
+func startProbeDashboard(cfg *config.Config, mgr *profile.ProbeManager, cam *profile.CameraStream, task *profile.TaskTracker, stats *mqttstats.Tracker) {
 	if mgr == nil || cfg.CapabilityProbe.WebListen == "" {
 		return
 	}
-	ws := profile.NewWebServer(mgr, cfg.DeviceID, cam, task)
+	ws := profile.NewWebServer(mgr, cfg.DeviceID, cam, task, stats)
 	srv := &http.Server{
 		Addr:              cfg.CapabilityProbe.WebListen,
 		Handler:           ws.Handler(),
