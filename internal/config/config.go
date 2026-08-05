@@ -19,6 +19,49 @@ type Config struct {
 	Inference   Inference   `yaml:"inference"`
 	OCR         OCR         `yaml:"ocr"`
 	ROS         ROSConfig   `yaml:"ros"`
+	CapabilityProbe CapabilityProbeCfg `yaml:"capability_probe"`
+}
+
+// CapabilityProbeCfg configures the robot profile capability probes and
+// the optional real-time web dashboard.
+type CapabilityProbeCfg struct {
+	Enabled         bool                       `yaml:"enabled"`
+	ProbeOnStartup  bool                       `yaml:"probe_on_startup"`
+	ProfilePath     string                     `yaml:"profile_path"`
+	WebListen       string                     `yaml:"web_listen"` // e.g. ":8080", empty = dashboard disabled
+	Intervals       map[string]int             `yaml:"intervals"` // per-capability seconds, 0/absent = no periodic
+	Camera          CameraProbeCfg             `yaml:"camera"`
+	OTA             OTAProbeCfg                `yaml:"ota"`
+	Inference       InferenceProbeCfg          `yaml:"inference"`
+}
+
+// CameraProbeCfg configures the camera capability probe. Mode "auto"
+// tries V4L2 devices first, then ROS image topics (future).
+type CameraProbeCfg struct {
+	Mode             string   `yaml:"mode"`
+	Devices          []string `yaml:"devices"`
+	RosTopics        []string `yaml:"ros_topics"`
+	ScriptPath       string   `yaml:"script_path"`
+	TimeoutSeconds   int      `yaml:"timeout_seconds"`
+	StreamScriptPath string   `yaml:"stream_script_path"` // live MJPEG source script
+	StreamFPS        int      `yaml:"stream_fps"`         // live stream frames per second
+}
+
+// OTAProbeCfg configures the OTA link probe. The test file is a small
+// file in the OTA repo used to verify the download+checksum path
+// without side effects. Signature checks are disabled by default until
+// a signing mechanism is deployed.
+type OTAProbeCfg struct {
+	TestFileURL    string `yaml:"test_file_url"`
+	CacheDir       string `yaml:"cache_dir"`
+	MinFreeDiskMB  int64  `yaml:"min_free_disk_mb"`
+	CheckPublicKey bool   `yaml:"check_public_key"`
+	PublicKeyPath  string `yaml:"public_key_path"`
+}
+
+// InferenceProbeCfg configures the inference service reachability probe.
+type InferenceProbeCfg struct {
+	TimeoutSeconds int `yaml:"timeout_seconds"`
 }
 
 type MQTT struct {

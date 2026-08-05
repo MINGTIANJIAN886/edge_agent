@@ -1,0 +1,110 @@
+# ============================================================
+#  Edge Agent 配置模板(config.example.yaml)
+#  复制为 config.yaml 后按设备修改。deploy.sh 会自动生成一份
+# 基于此结构的配置;本文件是手写/审查配置时的参考。
+#
+#  每台设备必须修改(★):
+#    device_id / client_id / MQTT 主题前缀
+#    OTA 模型目录(model_dir / current_symlink)
+#    摄像头设备节点(capability_probe.camera.devices)
+#    推理服务地址(inference.service_url,可选)
+# ============================================================
+
+device_id: "jetson002"                  # ★ 设备唯一 ID,决定 MQTT 主题 edge/<id>/...
+download_dir: "/tmp/agent/downloads"    # 远端文件下载目录
+heartbeat_interval: 30                  # 心跳间隔(秒)
+log_dir: "/var/log/agent"
+
+mqtt:
+  broker: "ca15b49bc8b442638f0cade1e45585ce.s1.eu.hivemq.cloud"  # ★ 或各自的 broker
+  port: 8883
+  client_id: "agent-jetson002"          # ★ 建议 agent-<device_id>
+  username: "liyankun"                  # ★ broker 账号
+  password: ""                          # ★ broker 密码
+  topic:                                # 主题前缀随 device_id 变化
+    command: "edge/jetson002/command"
+    download: "edge/jetson002/download"
+    heartbeat: "edge/jetson002/heartbeat"
+    result: "edge/jetson002/result"
+    register: "edge/jetson002/register"
+    mcp_register: "edge/jetson002/mcp/register"
+    mcp_call: "edge/jetson002/mcp/call"
+
+ota:
+  server_url: "https://gitee.com/hopelucy/edge-ota-1/raw/master"
+  version_path: "candidates.json"
+  check_interval: 300                   # 自动检查间隔(秒)
+  current_version: "7.0"                # 初始版本号(首次启动会按清单更新)
+  model_file: "/home/liyankun/models/model.ncnn.bin"   # ★ 模型落盘路径
+  model_dir: "/home/liyankun/models"    # ★ 模型版本目录(树莓派建议 /home/pi/models)
+  current_symlink: "/home/liyankun/models/current"     # ★ 当前版本软链
+  backup_count: 3                       # 保留的历史版本数
+  filter:
+    # 模型筛选:弱设备(树莓派)建议收紧 max_size_mb / 不设 required_format 时的评分
+    task_match_bonus: 4.0
+    tag_bonus: 1.0
+    max_size_mb: 20                     # 模型文件大小上限(MB)
+    min_accuracy: 0                     # 最低准确率(0=不限制)
+    required_format: "ncnn"             # 强制格式
+    max_latency_ms: 0                   # 最大延迟(ms,0=不限制)
+    prefer_accuracy: true               # 评分优先准确率
+  inference_restart_cmd: ""             # 更新后重启推理服务的命令(可选)
+
+cert_api: ""                            # 证书注册 API(可选)
+cert:
+  cert_file: ""
+  key_file: ""
+  ca_file: "/etc/ssl/certs/ca-certificates.crt"
+  auto_enroll: false
+  token: ""
+
+auth:
+  method: "password"                    # password | token | cert
+  token: ""
+  token_exchange: false
+
+ros:
+  enabled: false                        # 无 ROS 设备保持 false
+  bridge_script_ros1: "/opt/agent/bridge_ros1.py"
+  bridge_script_ros2: "/opt/agent/bridge_ros2.py"
+  bridge_python: "python3"
+  car_max_linear_speed: 2.0
+  car_max_angular_speed: 3.14
+  safety_watchdog_timeout: 5
+
+# 推理服务:本设备推理服务地址(如 ncnn HTTP 服务)。留空时
+# capability_probe 的 inference 探测如实报告 NOT_CONFIGURED。
+# inference:
+#   service_url: "http://127.0.0.1:8000"
+
+# OCR(可选):按 README-OCR.md 安装 PaddleOCR venv 后启用
+# ocr:
+#   enabled: true
+#   interval: 0                         # 定时触发间隔(秒,0=仅 MQTT 触发)
+#   script_path: "/opt/agent/edge_ocr.py"
+#   command_topic: "edge/jetson002/ocr/command"
+#   result_topic: "edge/jetson002/ocr/result"
+
+# 能力探测 + 设备画像总览面板(可选,强烈建议开启)
+capability_probe:
+  enabled: true
+  probe_on_startup: true
+  profile_path: "/var/lib/edge-agent/profile/robot-profile.json"
+  web_listen: "0.0.0.0:8080"            # ★ 端口:多设备同网段时注意不冲突
+  intervals:
+    ros: 60
+    ota: 600
+    camera: 600
+  camera:
+    mode: "auto"                        # auto | v4l2 | ros2 | ros1
+    devices:
+      - "/dev/video0"                   # ★ USB 摄像头节点
+    script_path: "/opt/edge-agent/probes/camera_probe.py"
+    timeout_seconds: 5
+  ota:
+    test_file_url: ""                   # OTA 探测测试文件(可选)
+    cache_dir: "/var/cache/edge-agent"
+    min_free_disk_mb: 100
+    check_public_key: false
+  inference:
+    timeout_seconds: 5

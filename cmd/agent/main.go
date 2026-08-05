@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -23,6 +25,8 @@ import (
 	"github.com/user/agent/internal/mcp"
 	"github.com/user/agent/internal/ocr"
 	"github.com/user/agent/internal/ota"
+	"github.com/user/agent/internal/profile"
+	"github.com/user/agent/internal/profile/probes"
 	"github.com/user/agent/internal/remote"
 	"github.com/user/agent/internal/ros"
 )
@@ -39,6 +43,47 @@ func main() {
 
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
 	log.Printf("agent starting, device_id=%s", cfg.DeviceID)
+
+	// Capability probe manager
+	var probeMgr *profile.ProbeManager
+	var camStream *profile.CameraStream
+	var taskTracker *profile.TaskTracker
+	if cfg.CapabilityProbe.Enabled {
+		profilePath := cfg.CapabilityProbe.ProfilePath
+		if profilePath == "" {
+			profilePath = "/var/lib/edge-agent/profile/robot-profile.json"
+		}
+		store := &profile.Store{
+			Path:     profilePath,
+			DeviceID: cfg.DeviceID,
+			Version:  1,
+		}
+		taskTracker = profile.NewTaskTracker(store, cfg.OTA.Task)
+		if v := ota.CurrentVersionFromSymlink(cfg.OTA.CurrentSymlink); v != "" {
+			taskTracker.SeedVersion(v)
+		}
+		probeMgr = profile.NewProbeManager(store)
+		probeMgr.Register(probes.NewROSProbe())
+		probeMgr.Register(probes.NewOTAProbe(cfg.OTA, cfg.CapabilityProbe.OTA))
+		probeMgr.Register(probes.NewInferenceProbe(cfg.Inference, cfg.CapabilityProbe.Inference))
+		probeMgr.Register(probes.NewCameraProbe(cfg.CapabilityProbe.Camera))
+		probeMgr.Register(probes.NewDeviceProbe(mcp.AgentVersion))
+		log.Printf("profile: capability probing enabled, %d probes registered", len(probeMgr.Names()))
+
+		streamScript := cfg.CapabilityProbe.Camera.StreamScriptPath
+		if streamScript == "" {
+			streamScript = "/opt/edge-agent/probes/camera_stream.py"
+		}
+		streamDevice := "/dev/video0"
+		if len(cfg.CapabilityProbe.Camera.Devices) > 0 {
+			streamDevice = cfg.CapabilityProbe.Camera.Devices[0]
+		}
+		fps := cfg.CapabilityProbe.Camera.StreamFPS
+		if fps <= 0 {
+			fps = 10
+		}
+		camStream = profile.NewCameraStream(streamScript, streamDevice, fps)
+	}
 
 	certDir := filepath.Dir(cfg.Cert.CertFile)
 	if certDir == "." {
@@ -129,7 +174,7 @@ func main() {
 				ctrl.Start(0)
 			}
 		}
-		mcp.SubscribeCalls(c, cfg.DeviceID, cfg.MQTT.Topic.MCPCall, cfg.Inference.ServiceURL, cfg)
+		mcp.SubscribeCalls(c, cfg.DeviceID, cfg.MQTT.Topic.MCPCall, cfg.Inference.ServiceURL, cfg, probeMgr, taskTracker)
 		if bridgeMgr != nil {
 			subscribeBridgeCommands(c, cfg.DeviceID, cfg.MQTT.Topic, bridgeMgr, rosVer)
 		}
@@ -155,11 +200,16 @@ func main() {
 
 	ota.InitRollbackState(cfg.OTA)
 	go heartbeat.Start(client, cfg.DeviceID, cfg.Heartbeat, cfg.MQTT.Topic.Heartbeat)
+	if taskTracker != nil {
+		ota.SetUpdateHook(taskTracker.RecordModel)
+	}
 	if cfg.OTA.AutoCheck {
 		go ota.StartPeriodicCheck(cfg.OTA, client, cfg.DeviceID, cfg.MQTT.Topic.Result)
 	} else {
 		log.Printf("OTA: auto_check disabled, updates triggered via MQTT only")
 	}
+	startProbeScheduler(cfg, probeMgr)
+	startProbeDashboard(cfg, probeMgr, camStream, taskTracker)
 	go mqttWatchdog(client)
 
 	sigCh := make(chan os.Signal, 1)
@@ -211,6 +261,54 @@ func subscribeBridgeCommands(client mqtt.Client, deviceID string, topics config.
 	}); token.WaitTimeout(5*time.Second) && token.Error() != nil {
 		log.Printf("subscribe emergency_stop error: %v", token.Error())
 	}
+}
+
+// startProbeScheduler runs the startup probe and per-capability
+// periodic probes.
+func startProbeScheduler(cfg *config.Config, mgr *profile.ProbeManager) {
+	if mgr == nil {
+		return
+	}
+	go func() {
+		if cfg.CapabilityProbe.ProbeOnStartup {
+			log.Println("profile: startup probe starting")
+			mgr.ProbeAll(context.Background(), nil, true)
+		}
+		for name, secs := range cfg.CapabilityProbe.Intervals {
+			if secs <= 0 {
+				continue
+			}
+			name, secs := name, secs
+			go func() {
+				t := time.NewTicker(time.Duration(secs) * time.Second)
+				defer t.Stop()
+				log.Printf("profile: periodic probe %s every %ds", name, secs)
+				for range t.C {
+					mgr.Probe(context.Background(), name, true)
+				}
+			}()
+		}
+	}()
+}
+
+// startProbeDashboard serves the real-time capability dashboard if
+// web_listen is configured.
+func startProbeDashboard(cfg *config.Config, mgr *profile.ProbeManager, cam *profile.CameraStream, task *profile.TaskTracker) {
+	if mgr == nil || cfg.CapabilityProbe.WebListen == "" {
+		return
+	}
+	ws := profile.NewWebServer(mgr, cfg.DeviceID, cam, task)
+	srv := &http.Server{
+		Addr:              cfg.CapabilityProbe.WebListen,
+		Handler:           ws.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	go func() {
+		log.Printf("profile: dashboard listening on http://%s", cfg.CapabilityProbe.WebListen)
+		if err := srv.ListenAndServe(); err != nil {
+			log.Printf("profile: dashboard error: %v", err)
+		}
+	}()
 }
 
 func mqttWatchdog(client mqtt.Client) {

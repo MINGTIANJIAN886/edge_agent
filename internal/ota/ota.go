@@ -61,6 +61,35 @@ type OTAState struct {
 
 var state = &OTAState{}
 
+// UpdateInfo describes a completed model auto-download: what the device
+// was doing and which model was selected and deployed.
+type UpdateInfo struct {
+	Version      string    `json:"version"`      // deployed version
+	Model        string    `json:"model"`        // selected model file name
+	RequestedTask string   `json:"requested_task"` // task the OTA targeted
+	ModelTask    string    `json:"model_task"`   // task the model was trained for
+	Accuracy     float64   `json:"accuracy"`
+	Format       string    `json:"format"`
+	LatencyMS    float64   `json:"latency_ms"`
+	SizeMB       float64   `json:"size_mb"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+// updateHook is invoked after a successful auto-download so the rest of
+// the agent (profile/task tracker) can record the new model. Set once
+// at startup via SetUpdateHook.
+var updateHook func(UpdateInfo)
+
+func SetUpdateHook(h func(UpdateInfo)) {
+	updateHook = h
+}
+
+func notifyUpdate(info UpdateInfo) {
+	if updateHook != nil {
+		updateHook(info)
+	}
+}
+
 func FetchManifest(serverURL, versionPath string) (*Manifest, error) {
 	url := serverURL + "/" + versionPath
 	client := &http.Client{Timeout: 30 * time.Second}
@@ -336,11 +365,14 @@ func probeMemMB() int {
 	return kb / 1024
 }
 
+// probeGPU reports whether the device has a GPU usable for inference
+// (CUDA/ncnn-GPU). Only NVIDIA devices count: /dev/nvidia0 exists on
+// Jetson and discrete NVIDIA GPUs. Graphics-only GPUs (e.g. the V3D on
+// a Raspberry Pi, exposed via /dev/dri/renderD128) must NOT count,
+// otherwise OTA would push GPU-requiring models to devices that cannot
+// run them.
 func probeGPU() bool {
 	if _, err := os.Stat("/dev/nvidia0"); err == nil {
-		return true
-	}
-	if _, err := os.Stat("/dev/dri/renderD128"); err == nil {
 		return true
 	}
 	return false
@@ -500,6 +532,14 @@ func CheckNow(cfg config.OTA, client mqtt.Client, deviceID, resultTopic string, 
 		manifest = filtered
 	}
 
+	// the model that will be deployed (first file of the chosen version)
+	var picked ManifestFile
+	if len(manifest.Files) > 0 {
+		picked = manifest.Files[0]
+	}
+	log.Printf("OTA: picked model %s version=%s task=%s accuracy=%.4f",
+		picked.Name, manifest.Version, picked.Task, picked.Accuracy)
+
 	symlinkPath := cfg.CurrentSymlink
 	currentVersion := cfg.CurrentVersion
 
@@ -550,7 +590,23 @@ func CheckNow(cfg config.OTA, client mqtt.Client, deviceID, resultTopic string, 
 	}
 
 	msg := fmt.Sprintf("updated to %s", manifest.Version)
-	publishResult(client, deviceID, resultTopic, true, msg)
+	if resultTopic != "" && client != nil {
+		payload := fmt.Sprintf(`{"device_id":%q,"success":true,"message":%q,"task":%q,"model":%q,"version":%q,"model_task":%q,"accuracy":%.4f}`,
+			deviceID, msg, task, picked.Name, manifest.Version, picked.Task, picked.Accuracy)
+		client.Publish(resultTopic, 1, false, []byte(payload))
+	}
+
+	notifyUpdate(UpdateInfo{
+		Version:       manifest.Version,
+		Model:         picked.Name,
+		RequestedTask: task,
+		ModelTask:     picked.Task,
+		Accuracy:      picked.Accuracy,
+		Format:        picked.Format,
+		LatencyMS:     picked.LatencyMS,
+		SizeMB:        picked.SizeMB,
+		UpdatedAt:     time.Now(),
+	})
 	return msg, nil
 }
 

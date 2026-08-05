@@ -18,6 +18,7 @@ import (
 	"github.com/user/agent/internal/config"
 	"github.com/user/agent/internal/ocr"
 	"github.com/user/agent/internal/ota"
+	"github.com/user/agent/internal/profile"
 	"github.com/user/agent/internal/ros"
 )
 
@@ -71,7 +72,9 @@ type MCPCallResponse struct {
 	Error   string      `json:"error,omitempty"`
 }
 
-const agentVersion = "1.0.0"
+const AgentVersion = "1.2.0"
+
+const agentVersion = AgentVersion
 
 func Register(apiURL, deviceID, hostname string) error {
 	req := RegisterRequest{
@@ -208,6 +211,18 @@ func PublishTools(client mqtt.Client, deviceID, topic string, rosVer ros.Version
 				Properties: map[string]SchemaProperty{},
 			},
 		},
+		{
+			Name:        "probe_capabilities",
+			Description: "Actively probe device capabilities (camera/ota/ros/inference) and return structured results",
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]SchemaProperty{
+					"capabilities":    {Type: "array", Description: "Capabilities to probe, empty = all"},
+					"force":           {Type: "boolean", Description: "true = re-probe, false = cached result ok"},
+					"timeout_seconds": {Type: "number", Description: "Overall probe timeout in seconds"},
+				},
+			},
+		},
 	}
 
 	if rosVer == ros.ROS1 || rosVer == ros.ROS2 {
@@ -322,7 +337,7 @@ func PublishTools(client mqtt.Client, deviceID, topic string, rosVer ros.Version
 	}
 }
 
-func SubscribeCalls(client mqtt.Client, deviceID, callTopic, inferenceURL string, cfg *config.Config) {
+func SubscribeCalls(client mqtt.Client, deviceID, callTopic, inferenceURL string, cfg *config.Config, mgr *profile.ProbeManager, task *profile.TaskTracker) {
 	token := client.Subscribe(callTopic, 1, func(_ mqtt.Client, msg mqtt.Message) {
 		var req MCPCallRequest
 		if err := json.Unmarshal(msg.Payload(), &req); err != nil {
@@ -346,13 +361,21 @@ func SubscribeCalls(client mqtt.Client, deviceID, callTopic, inferenceURL string
 		case "get_logs":
 			resp = handleGetLogs(req)
 		case "detect_objects":
+			if task != nil {
+				task.SetTask("object_detection")
+			}
 			resp = handleDetect(inferenceURL, req)
 		case "run_ocr":
+			if task != nil {
+				task.SetTask("ocr")
+			}
 			resp = handleRunOCR(cfg, req)
 		case "check_update":
 			resp = handleCheckUpdate(cfg, client, deviceID, req)
 		case "rollback_model":
 			resp = handleRollback(cfg, client, deviceID, req)
+		case "probe_capabilities":
+			resp = handleProbeCapabilities(deviceID, mgr, req)
 		default:
 			resp = MCPCallResponse{
 				ID:      req.ID,
@@ -534,4 +557,46 @@ func handleRollback(cfg *config.Config, client mqtt.Client, deviceID string, req
 		return MCPCallResponse{ID: req.ID, Success: false, Error: err.Error()}
 	}
 	return MCPCallResponse{ID: req.ID, Success: true, Result: msg}
+}
+
+// handleProbeCapabilities actively probes device capabilities and
+// returns a summary plus detailed structured results.
+func handleProbeCapabilities(deviceID string, mgr *profile.ProbeManager, req MCPCallRequest) MCPCallResponse {
+	if mgr == nil {
+		return MCPCallResponse{ID: req.ID, Success: false, Error: "capability probing disabled"}
+	}
+
+	var names []string
+	if raw, ok := req.Params["capabilities"].([]interface{}); ok {
+		for _, n := range raw {
+			if s, ok := n.(string); ok {
+				names = append(names, s)
+			}
+		}
+	}
+	force := false
+	if v, ok := req.Params["force"].(bool); ok {
+		force = v
+	}
+	timeout := 30 * time.Second
+	if v, ok := req.Params["timeout_seconds"].(float64); ok && v > 0 {
+		timeout = time.Duration(v) * time.Second
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	results := mgr.ProbeAll(ctx, names, force)
+
+	summary := map[string]bool{}
+	for name, res := range results {
+		summary[name] = res.Result
+	}
+
+	payload := map[string]interface{}{
+		"device_id": deviceID,
+		"summary":   summary,
+		"results":   results,
+	}
+	return MCPCallResponse{ID: req.ID, Success: true, Result: payload}
 }
