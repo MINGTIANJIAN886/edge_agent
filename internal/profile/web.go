@@ -466,135 +466,282 @@ const indexHTML = `<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Edge Agent 设备总览</title>
+<title>EDGE.AI 智能体控制台</title>
 <style>
+  :root {
+    --bg0: #01040d; --bg1: #02081a;
+    --fg: #b8e4ff; --dim: #5f87a8;
+    --cyan: #00e5ff; --blue: #3aa0ff;
+    --ok: #2bff88; --warn: #ffb020; --bad: #ff3b5c;
+    --line: #123a52; --card: rgba(4, 17, 34, .78);
+    --glow: rgba(0, 229, 255, .5);
+  }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-         background: linear-gradient(160deg, #0f172a 0%, #111c33 60%, #0b1226 100%);
-         color: #e2e8f0; min-height: 100vh; }
-  .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 20px 48px; }
+  html { font-size: 15px; }
+  body {
+    font-family: "Cascadia Mono", Consolas, "SFMono-Regular", "PingFang SC", "Microsoft YaHei", monospace;
+    background:
+      radial-gradient(1200px 600px at 72% -10%, rgba(0,229,255,.09), transparent 60%),
+      radial-gradient(900px 500px at 8% 110%, rgba(58,160,255,.08), transparent 60%),
+      linear-gradient(180deg, #01040d 0%, #02081a 55%, #01040d 100%);
+    color: var(--fg); min-height: 100vh; overflow-x: hidden;
+  }
+  body::before {
+    content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+    background:
+      linear-gradient(rgba(0,229,255,.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,229,255,.05) 1px, transparent 1px);
+    background-size: 44px 44px;
+    -webkit-mask-image: radial-gradient(ellipse at center, rgba(0,0,0,.85), transparent 85%);
+    mask-image: radial-gradient(ellipse at center, rgba(0,0,0,.85), transparent 85%);
+  }
+  body::after {
+    content: ""; position: fixed; left: 0; right: 0; height: 200px; top: -200px; z-index: 0;
+    pointer-events: none;
+    background: linear-gradient(180deg, transparent, rgba(0,229,255,.05) 55%, rgba(0,229,255,.13) 95%, transparent);
+    animation: scan 10s linear infinite;
+  }
+  @keyframes scan { to { transform: translateY(calc(100vh + 400px)); } }
+  .wrap { position: relative; z-index: 1; max-width: 1180px; margin: 0 auto; padding: 30px 20px 90px; }
 
-  header { display: flex; align-items: center; justify-content: space-between;
-           flex-wrap: wrap; gap: 12px; margin-bottom: 8px; }
-  header h1 { font-size: 22px; font-weight: 600; display: flex; align-items: center; gap: 10px; }
-  .sub { color: #7c8db0; font-size: 13px; margin-bottom: 24px; }
-  .chips { display: flex; gap: 8px; flex-wrap: wrap; }
-  .chip { display: inline-flex; align-items: center; gap: 8px; background: #1e293b;
-          border: 1px solid #334155; border-radius: 999px; padding: 6px 14px; font-size: 13px; }
+  header { display: flex; align-items: flex-end; justify-content: space-between; flex-wrap: wrap; gap: 14px; }
+  .logo { display: flex; align-items: center; gap: 18px; }
+  .radar { position: relative; width: 54px; height: 54px; flex-shrink: 0; }
+  .radar::before {
+    content: ""; position: absolute; inset: 0; border-radius: 50%;
+    border: 1px solid rgba(0,229,255,.5);
+    box-shadow: 0 0 16px rgba(0,229,255,.35), inset 0 0 16px rgba(0,229,255,.2);
+  }
+  .radar::after {
+    content: ""; position: absolute; inset: 7px; border-radius: 50%;
+    border: 1px dashed rgba(0,229,255,.35); animation: spin 14s linear infinite;
+  }
+  .radar .core {
+    position: absolute; left: 50%; top: 50%; width: 8px; height: 8px; margin: -4px 0 0 -4px;
+    border-radius: 50%; background: var(--cyan);
+    box-shadow: 0 0 12px var(--cyan), 0 0 26px rgba(0,229,255,.6);
+    animation: pulse 1.8s ease-in-out infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes pulse { 0%,100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.7); opacity: .5; } }
+  h1.title {
+    font-size: 23px; font-weight: 700; letter-spacing: .22em; color: #e6f7ff;
+    text-shadow: 0 0 12px rgba(0,229,255,.55), 0 0 44px rgba(0,229,255,.25);
+  }
+  h1.title .ai { color: var(--cyan); }
+  .sub { color: var(--dim); font-size: 12px; letter-spacing: .16em; margin-top: 5px; }
+  .chips { display: flex; gap: 10px; flex-wrap: wrap; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 9px; padding: 7px 15px; font-size: 12px;
+    letter-spacing: .06em; color: var(--fg);
+    background: rgba(0,229,255,.04); border: 1px solid var(--line); border-radius: 4px;
+    box-shadow: inset 0 0 12px rgba(0,229,255,.06), 0 0 12px rgba(0,229,255,.05);
+  }
   .chip.dev { color: #7dd3fc; }
-  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; background: var(--dim); }
+  .dot.ok { background: var(--ok); box-shadow: 0 0 8px var(--ok); animation: pulse 1.6s ease-in-out infinite; }
+  .dot.warn { background: var(--warn); box-shadow: 0 0 8px var(--warn); animation: pulse .9s ease-in-out infinite; }
+  .dot.bad { background: var(--bad); box-shadow: 0 0 8px var(--bad); }
 
-  h2.sec { font-size: 14px; font-weight: 600; color: #94a3b8; text-transform: uppercase;
-           letter-spacing: .08em; margin: 28px 0 14px; display: flex; align-items: center; gap: 8px; }
+  h2.sec {
+    font-size: 13px; font-weight: 600; color: var(--cyan); letter-spacing: .28em;
+    text-transform: uppercase; margin: 34px 0 14px; display: flex; align-items: center; gap: 10px;
+  }
+  h2.sec::after { content: ""; flex: 1; height: 1px;
+    background: linear-gradient(90deg, rgba(0,229,255,.4), transparent); }
 
   .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
   @media (max-width: 860px) { .row2 { grid-template-columns: 1fr; } }
 
-  .card { background: rgba(30,41,59,.75); backdrop-filter: blur(6px); border: 1px solid #334155;
-          border-radius: 16px; padding: 20px; }
-  .card h3 { font-size: 13px; font-weight: 600; color: #94a3b8; margin-bottom: 14px;
-             letter-spacing: .05em; }
+  .card {
+    position: relative; background: var(--card); backdrop-filter: blur(6px);
+    border: 1px solid var(--line); border-radius: 8px; padding: 20px;
+    box-shadow: 0 0 18px rgba(0,229,255,.06), inset 0 0 24px rgba(0,229,255,.03);
+  }
+  .card::before, .card::after {
+    content: ""; position: absolute; width: 12px; height: 12px; pointer-events: none;
+    border-color: rgba(0,229,255,.55); border-style: solid;
+  }
+  .card::before { top: -1px; left: -1px; border-width: 2px 0 0 2px; }
+  .card::after { bottom: -1px; right: -1px; border-width: 0 2px 2px 0; }
+  .card h3 {
+    font-size: 12px; font-weight: 600; color: var(--cyan); margin-bottom: 14px;
+    letter-spacing: .18em; text-transform: uppercase; display: flex; align-items: center; gap: 8px;
+  }
+  .card.live { border-color: rgba(0,229,255,.6); box-shadow: 0 0 26px rgba(0,229,255,.18), inset 0 0 30px rgba(0,229,255,.05); }
 
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
-  .tile { background: #16233d; border: 1px solid #24354f; border-radius: 10px; padding: 12px 14px; }
-  .tile .label { font-size: 11px; color: #7c8db0; margin-bottom: 5px; }
-  .tile .value { font-size: 14px; font-weight: 500; word-break: break-all; }
-  .tile .value small { font-size: 11px; color: #7c8db0; font-weight: 400; }
+  .tile {
+    background: rgba(0,229,255,.03); border: 1px solid var(--line); border-radius: 6px;
+    padding: 12px 14px; transition: border-color .2s, box-shadow .2s;
+  }
+  .tile:hover { border-color: rgba(0,229,255,.45); box-shadow: 0 0 12px rgba(0,229,255,.15); }
+  .tile .label { font-size: 10px; color: var(--dim); margin-bottom: 5px; letter-spacing: .1em; }
+  .tile .value { font-size: 13.5px; font-weight: 500; word-break: break-all; }
+  .tile .value small { font-size: 11px; color: var(--dim); font-weight: 400; }
 
   table { width: 100%; border-collapse: collapse; }
-  td { padding: 8px 6px; border-bottom: 1px dashed #24354f; font-size: 13px; }
+  td { padding: 8px 6px; border-bottom: 1px dashed var(--line); font-size: 12.5px; }
   tr:last-child td { border-bottom: none; }
-  td.k { color: #7c8db0; width: 34%; }
+  td.k { color: var(--dim); width: 34%; letter-spacing: .04em; }
   td.v { text-align: right; word-break: break-all; }
-  td.v .empty { color: #475569; font-style: italic; }
+  td.v .empty { color: #2c4a63; font-style: italic; }
 
   .caps { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
-  .cap { background: rgba(30,41,59,.75); backdrop-filter: blur(6px); border: 1px solid #334155;
-         border-radius: 16px; padding: 18px; display: flex; flex-direction: column; gap: 10px; }
-  .cap .head { display: flex; align-items: center; justify-content: space-between; }
-  .cap .name { font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
-  .badge { font-size: 11px; padding: 3px 10px; border-radius: 999px; font-weight: 600; }
-  .b-ok { background: #14532d; color: #4ade80; }
-  .b-warn { background: #451a03; color: #fbbf24; }
-  .b-bad { background: #450a0a; color: #f87171; }
-  .kv { display: flex; justify-content: space-between; font-size: 12px; padding: 3px 0;
-        border-bottom: 1px dashed #24354f; gap: 10px; }
+  .cap {
+    position: relative; background: var(--card); backdrop-filter: blur(6px);
+    border: 1px solid var(--line); border-radius: 8px; padding: 0;
+    box-shadow: 0 0 18px rgba(0,229,255,.05); transition: border-color .2s, box-shadow .2s;
+    align-self: start;
+  }
+  .cap:hover { border-color: rgba(0,229,255,.45); box-shadow: 0 0 18px rgba(0,229,255,.14); }
+  .cap .head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 15px 16px 13px; cursor: pointer; user-select: none;
+  }
+  .cap .head .name { font-size: 14px; font-weight: 600; letter-spacing: .08em;
+    display: flex; align-items: center; gap: 10px; text-transform: uppercase; }
+  .cap .arrow { color: var(--dim); font-size: 11px; transition: transform .25s; }
+  .cap.open .arrow { transform: rotate(180deg); }
+  .cap .capBody { display: none; padding: 0 16px 14px; }
+  .cap.open .capBody { display: block; animation: fadein .3s ease; }
+  @keyframes fadein { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+  .badge { font-size: 10px; padding: 3px 10px; border-radius: 2px; font-weight: 600; letter-spacing: .12em; }
+  .b-ok { background: rgba(43,255,136,.12); color: var(--ok); box-shadow: 0 0 8px rgba(43,255,136,.25) inset; }
+  .b-warn { background: rgba(255,176,32,.12); color: var(--warn); box-shadow: 0 0 8px rgba(255,176,32,.25) inset; }
+  .b-bad { background: rgba(255,59,92,.12); color: var(--bad); box-shadow: 0 0 8px rgba(255,59,92,.25) inset; }
+  .kv { display: flex; justify-content: space-between; font-size: 11.5px; padding: 3px 0;
+    border-bottom: 1px dashed var(--line); gap: 10px; }
   .kv:last-child { border-bottom: none; }
-  .kv .k { color: #7c8db0; flex-shrink: 0; }
+  .kv .k { color: var(--dim); flex-shrink: 0; letter-spacing: .05em; }
   .kv .v { text-align: right; word-break: break-all; }
-  .err { color: #f87171; font-size: 12px; }
-  .msg { color: #a5b4fc; font-size: 12px; }
-  .cap .btns { margin-top: auto; }
-  button { background: #334155; color: #e2e8f0; border: 1px solid #475569; border-radius: 8px;
-           padding: 7px 14px; font-size: 12px; cursor: pointer; }
-  button:hover { background: #475569; }
-  button.primary { background: #0ea5e9; border-color: #0ea5e9; color: #fff; }
-  button.primary:hover { background: #38bdf8; }
+  .err { color: var(--bad); font-size: 11.5px; margin-top: 6px; }
+  .msg { color: #7fb8ff; font-size: 11.5px; margin-top: 6px; line-height: 1.5; }
+  .cap .btns { margin-top: 12px; }
+
+  button {
+    background: rgba(0,229,255,.06); color: var(--fg); border: 1px solid var(--line);
+    border-radius: 4px; padding: 7px 14px; font-size: 11.5px; cursor: pointer; letter-spacing: .06em;
+    font-family: inherit; transition: all .18s;
+  }
+  button:hover { background: rgba(0,229,255,.16); border-color: rgba(0,229,255,.55);
+    box-shadow: 0 0 12px rgba(0,229,255,.25); }
+  button.primary { background: rgba(0,229,255,.18); border-color: rgba(0,229,255,.6); color: #e6f7ff; }
+  button.primary:hover { background: rgba(0,229,255,.3); box-shadow: 0 0 18px rgba(0,229,255,.4); }
+  button:disabled { opacity: .5; cursor: wait; }
+
+  .statline { font-size: 24px; font-weight: 700; color: var(--cyan);
+    text-shadow: 0 0 12px rgba(0,229,255,.5); letter-spacing: .06em; }
+  .flash { animation: flash 1.2s ease; }
+  @keyframes flash { 0% { text-shadow: 0 0 4px rgba(255,255,255,.4); } 30% { color: #fff; } }
 
   footer { display: flex; align-items: center; justify-content: space-between;
-           color: #64748b; font-size: 12px; margin-top: 32px; }
-  .load { text-align: center; color: #64748b; padding: 80px 0; font-size: 14px; }
+    color: var(--dim); font-size: 11px; margin-top: 36px; letter-spacing: .06em; }
+  .load { text-align: center; color: var(--dim); padding: 80px 0; font-size: 13px; letter-spacing: .2em; }
+
+  /* 开机自检遮罩 */
+  #boot {
+    position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 20px;
+    background: radial-gradient(800px 500px at 50% 42%, rgba(0,229,255,.08), transparent 70%), var(--bg0);
+    transition: opacity .7s ease, visibility .7s;
+  }
+  #boot.off { opacity: 0; visibility: hidden; }
+  #boot .t { color: var(--cyan); letter-spacing: .34em; font-size: 15px;
+    text-shadow: 0 0 14px rgba(0,229,255,.6); }
+  #boot .bar { width: 340px; height: 2px; background: rgba(0,229,255,.15); position: relative; overflow: hidden; }
+  #boot .bar::after { content: ""; position: absolute; top: 0; bottom: 0; width: 38%;
+    background: linear-gradient(90deg, transparent, var(--cyan), transparent);
+    animation: bootbar 1.1s ease-in-out infinite; }
+  @keyframes bootbar { from { left: -40%; } to { left: 100%; } }
+  #boot .pct { color: var(--dim); font-size: 11px; letter-spacing: .12em; }
+
+  /* 底部状态条 */
+  #statusbar {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
+    display: flex; align-items: center; gap: 14px; padding: 9px 20px;
+    background: rgba(2,8,26,.92); border-top: 1px solid var(--line);
+    box-shadow: 0 -6px 24px rgba(0,0,0,.55), inset 0 1px 0 rgba(0,229,255,.12);
+    font-size: 11px; color: var(--dim); letter-spacing: .08em;
+  }
+  #statusbar .sys { color: var(--ok); text-shadow: 0 0 8px var(--ok); font-weight: 700; }
+  #statusbar .txt { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--fg); }
+  #statusbar .sp { flex: 1; }
+  #statusbar .kv2 { color: var(--dim); }
+  #statusbar .kv2 b { color: var(--cyan); font-weight: 600; }
+
+  @media (max-width: 560px) {
+    .grid { grid-template-columns: 1fr 1fr; }
+    h1.title { font-size: 18px; letter-spacing: .14em; }
+  }
 </style>
 </head>
 <body>
 <div class="wrap">
   <header>
-    <h1>🚀 Edge Agent 设备总览</h1>
+    <div class="logo">
+      <div class="radar"><span class="core"></span></div>
+      <div>
+        <h1 class="title">EDGE.<span class="ai">AI</span> 控制台</h1>
+        <div class="sub" id="lastUpdate">WAITING FOR TELEMETRY...</div>
+      </div>
+    </div>
     <div class="chips">
       <span class="chip dev" id="chipDevice">--</span>
-      <span class="chip"><span class="dot" id="connDot"></span><span id="connTxt">连接中...</span></span>
+      <span class="chip"><span class="dot" id="connDot"></span><span id="connTxt">CONNECTING...</span></span>
       <button class="primary" onclick="probeAll()">全部重新探测</button>
     </div>
   </header>
-  <div class="sub" id="lastUpdate">等待数据...</div>
 
   <div id="loading" class="load">正在加载探测数据...</div>
   <div id="main" style="display:none;">
 
-    <h2 class="sec">⚙️ 设备参数</h2>
+    <h2 class="sec">设备参数</h2>
     <div class="row2">
       <div class="card">
-        <h3>硬件参数</h3>
+        <h3>硬件参数 / HARDWARE</h3>
         <div class="grid" id="hwGrid"></div>
       </div>
       <div class="card">
-        <h3>软件环境</h3>
+        <h3>软件环境 / SOFTWARE</h3>
         <table id="swTable"></table>
       </div>
     </div>
 
-    <h2 class="sec">🤖 当前任务 & 所用模型</h2>
+    <h2 class="sec">当前任务 &amp; 所用模型</h2>
     <div class="row2">
       <div class="card">
-        <h3>当前执行的任务</h3>
-        <div style="font-size:24px; font-weight:700; color:#7dd3fc;" id="curTask">--</div>
-        <div class="msg" id="curTaskSub" style="margin-top:8px;">任务来源于设备收到的推理调用(detect_objects / run_ocr)</div>
+        <h3>当前执行的任务 / ACTIVE TASK</h3>
+        <div class="statline" id="curTask">--</div>
+        <div class="msg" id="curTaskSub" style="margin-top:8px;">任务来源于设备收到的推理调用 (detect_objects / run_ocr)</div>
       </div>
       <div class="card">
-        <h3>所用模型 (最近一次 OTA 自动下载)</h3>
+        <h3>所用模型 / DEPLOYED MODEL</h3>
         <div id="modelInfo">
           <div class="msg">尚未发生过模型自动下载</div>
         </div>
       </div>
     </div>
 
-    <h2 class="sec">📡 MQTT 传输速率</h2>
+    <h2 class="sec">MQTT 传输速率</h2>
     <div class="card" id="mqttCard">
-      <h3 style="margin-bottom:12px;">最近 60 秒 MQTT 吞吐 (B/s · 蓝=上行 橙=下行 · 每秒采样)</h3>
-      <div id="mqttSummary" style="font-size:13px; color:#a5b4fc; margin-bottom:10px; font-family:monospace;">等待数据...</div>
-      <canvas id="mqttChart" height="220" style="width:100%; background:#0b1226; border-radius:10px;"></canvas>
+      <h3 style="margin-bottom:12px;">最近 60 秒 MQTT 吞吐 (B/s · 青=上行 橙=下行)</h3>
+      <div id="mqttSummary" style="font-size:12px; color:#7fb8ff; margin-bottom:10px;">等待数据...</div>
+      <canvas id="mqttChart" height="220" style="width:100%; background:rgba(1,4,13,.8); border-radius:6px; border:1px solid var(--line);"></canvas>
     </div>
 
-    <h2 class="sec">🔍 能力探测</h2>
+    <h2 class="sec">能力探测</h2>
     <div class="caps" id="caps"></div>
 
-    <h2 class="sec">📷 实时画面</h2>
+    <h2 class="sec">实时画面</h2>
     <div class="card" id="camCard">
-      <h3 style="margin-bottom:12px;">摄像头实时预览 (MJPEG · 按需启停,观看即开,离开即关)</h3>
+      <h3 style="margin-bottom:12px;">摄像头实时预览 / LIVE CAMERA FEED
+        <span class="badge b-ok" style="display:none;" id="liveTag">● LIVE</span>
+      </h3>
       <div style="text-align:center;">
-        <img id="camImg" style="max-width:100%; border-radius:10px; background:#0b1226; display:none;"
+        <img id="camImg" style="max-width:100%; border-radius:6px; background:rgba(1,4,13,.8); display:none; border:1px solid var(--line);"
              alt="camera stream">
-        <div id="camOff" style="color:#7c8db0; padding:24px 0; font-size:14px;">
+        <div id="camOff" style="color:var(--dim); padding:24px 0; font-size:13px; letter-spacing:.1em;">
           摄像头未开启 — 点击下方按钮开始实时画面
         </div>
       </div>
@@ -606,11 +753,28 @@ const indexHTML = `<!DOCTYPE html>
     </div>
 
     <footer>
-      <span>连接: <span id="connState">--</span> · 最近更新: <span id="lastUpd">--</span></span>
-      <span>SSE 实时推送 · 每 5 秒心跳</span>
+      <span>LINK: <span id="connState">--</span> · UPD: <span id="lastUpd">--</span></span>
+      <span>SSE LIVE FEED · KEY [R] = 全部重新探测</span>
     </footer>
   </div>
 </div>
+
+<div id="boot">
+  <div class="radar" style="width:64px;height:64px;"><span class="core"></span></div>
+  <div class="t">INITIALIZING EDGE.AI INTERFACE</div>
+  <div class="bar"></div>
+  <div class="pct" id="bootPct">0%</div>
+</div>
+
+<div id="statusbar">
+  <span class="sys" id="sysState">●</span>
+  <span class="txt" id="statusText">SYSTEM OFFLINE</span>
+  <span class="sp"></span>
+  <span class="kv2">PKT <b id="pktCount">0</b></span>
+  <span class="kv2">UPTIME <b id="bootTxt">--</b></span>
+  <span class="kv2" id="clk">--:--:--</span>
+</div>
+
 <script>
 const HARDWARE = [
   ['device_type','设备型号'],['architecture','架构'],['cpu_cores','CPU 核心数'],
@@ -619,7 +783,7 @@ const HARDWARE = [
 const RUNTIME = [['uptime','运行时长'],['load','负载']];
 const SOFTWARE = [
   ['os','操作系统'],['kernel','内核版本'],['cuda','CUDA'],['tensorrt','TensorRT'],
-  ['python','Python'],['ros','ROS'],['agent_version','Agent 版本'],
+  ['python','Python'],['ros','ROS'],['ros_distro','ROS 发行版'],['agent_version','Agent 版本'],
 ];
 const CAP_DETAILS = {
   camera:    [['device','设备'],['width','宽度'],['height','高度'],['latency_ms','耗时(ms)']],
@@ -630,14 +794,38 @@ const CAP_DETAILS = {
 const esc = s => (s ?? '').toString().replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const tile = (label, value) => '<div class="tile"><div class="label">' + esc(label) + '</div><div class="value">' + (value ? esc(value) : '<small>未检测到</small>') + '</div></div>';
 const row = (k, v) => '<tr><td class="k">' + esc(k) + '</td><td class="v">' + (v ? esc(v) : '<span class="empty">未安装</span>') + '</td></tr>';
-
+const say = t => { const el = document.getElementById('statusText'); if (el) el.textContent = t; };
+const beep = el => { if (!el) return; el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); };
+function clockTick() {
+  const el = document.getElementById('clk');
+  if (el) el.textContent = new Date().toLocaleTimeString();
+}
+setInterval(clockTick, 1000); clockTick();
+let bootDone = false;
+function setBoot(n) {
+  document.getElementById('bootPct').textContent = n + '%';
+  if (n >= 100 && !bootDone) {
+    bootDone = true;
+    setTimeout(() => document.getElementById('boot').classList.add('off'), 350);
+    say('ALL SYSTEMS ONLINE');
+  }
+}
+let bootN = 0;
+const bootTimer = setInterval(() => {
+  if (bootDone) { clearInterval(bootTimer); return; }
+  bootN = Math.min(bootN + 3 + Math.floor(Math.random() * 7), 92);
+  setBoot(bootN);
+}, 160);
+let PKT = 0;
 function render(ev) {
   document.getElementById('loading').style.display = 'none';
   document.getElementById('main').style.display = 'block';
   const caps = ev.caps || {};
   document.getElementById('chipDevice').textContent = ev.device_id;
   document.getElementById('lastUpd').textContent = new Date(ev.timestamp * 1000).toLocaleTimeString();
-  document.getElementById('lastUpdate').textContent = '设备 ' + ev.device_id + ' · 最近更新 ' + new Date(ev.timestamp * 1000).toLocaleString();
+  document.getElementById('lastUpdate').textContent = 'DEVICE ' + ev.device_id + ' · LAST UPDATE ' + new Date(ev.timestamp * 1000).toLocaleString();
+  PKT++;
+  document.getElementById('pktCount').textContent = PKT;
 
   const dev = caps.device?.details || {};
   const hw = dev.hardware || {}, sw = dev.software || {}, rt = dev.runtime || {};
@@ -645,7 +833,13 @@ function render(ev) {
     HARDWARE.map(([k, l]) => tile(l, hw[k])).join('') + RUNTIME.map(([k, l]) => tile(l, rt[k])).join('');
   document.getElementById('swTable').innerHTML = SOFTWARE.map(([k, l]) => row(l, sw[k])).join('');
 
-  document.getElementById('curTask').textContent = ev.task || '未知';
+  const taskEl = document.getElementById('curTask');
+  const prevTask = taskEl.textContent;
+  taskEl.textContent = ev.task || '未知';
+  if (ev.task && prevTask !== ev.task) {
+    beep(taskEl);
+    say('TASK UPDATE :: ' + ev.task.toUpperCase() + ' / ' + ev.device_id);
+  }
   const m = ev.model;
   const modelInfo = document.getElementById('modelInfo');
   if (m && (m.model || m.version)) {
@@ -693,18 +887,22 @@ function render(ev) {
       }
     }
     const card = document.createElement('div');
-    card.className = 'cap';
+    card.className = 'cap open';
     card.innerHTML =
-      '<div class="head"><div class="name"><span class="dot ' + dotCls + '"></span>' + esc(n) + '</div>' +
-      '<span class="badge ' + cls + '">' + label + '</span></div>' +
+      '<div class="head" onclick="toggleCap(this)"><div class="name"><span class="dot ' + dotCls + '"></span>' + esc(n) + '</div>' +
+      '<div style="display:flex;align-items:center;gap:10px;"><span class="badge ' + cls + '">' + label + '</span><span class="arrow">▼</span></div></div>' +
+      '<div class="capBody">' +
       rows.map(([k, v]) => '<div class="kv"><span class="k">' + esc(k) + '</span><span class="v">' + esc(v) + '</span></div>').join('') +
       (c.error_code ? '<div class="err">' + esc(c.error_code) + '</div>' : '') +
       (c.message ? '<div class="msg">' + esc(c.message) + '</div>' : '') +
-      '<div class="btns"><button onclick="probeCap(\'' + esc(n) + '\')">重新探测</button></div>';
+      '<div class="btns"><button onclick="probeCap(\'' + esc(n) + '\')">重新探测</button></div>' +
+      '</div>';
     grid.appendChild(card);
   }
   if (ev.stats) drawStats(ev.stats);
+  setBoot(100);
 }
+function toggleCap(head) { head.parentElement.classList.toggle('open'); }
 const fmtBytes = n => n >= 1048576 ? (n / 1048576).toFixed(2) + ' MB'
               : n >= 1024 ? (n / 1024).toFixed(1) + ' KB' : n + ' B';
 function drawStats(s) {
@@ -714,8 +912,8 @@ function drawStats(s) {
   let curIn = 0, curOut = 0;
   if (n > 0) { curIn = s.in[n - 1]; curOut = s.out[n - 1]; }
   title.textContent =
-    '当前 上行 ' + fmtBytes(curIn) + '/s · 下行 ' + fmtBytes(curOut) + '/s' +
-    '     累计 上行 ' + fmtBytes(s.total_in_bytes) + ' · 下行 ' + fmtBytes(s.total_out_bytes);
+    'CURRENT 上行 ' + fmtBytes(curIn) + '/s · 下行 ' + fmtBytes(curOut) + '/s' +
+    '      TOTAL 上行 ' + fmtBytes(s.total_in_bytes) + ' · 下行 ' + fmtBytes(s.total_out_bytes);
   if (!cv || typeof cv.getContext !== 'function') return;
   const dpr = window.devicePixelRatio || 1;
   const w = cv.clientWidth, h = cv.clientHeight || 220;
@@ -728,7 +926,7 @@ function drawStats(s) {
   const X = i => n <= 1 ? padL + gw / 2 : padL + gw * i / (n - 1);
   const Y = v => padT + gh - (v / maxY) * gh;
   ctx.clearRect(0, 0, w, h);
-  ctx.strokeStyle = '#1e2a45'; ctx.fillStyle = '#5b6f95'; ctx.font = '10px monospace';
+  ctx.strokeStyle = '#0e2a40'; ctx.fillStyle = '#4b6a8f'; ctx.font = '10px monospace';
   ctx.lineWidth = 1;
   for (let g = 0; g <= 4; g++) {
     const y = padT + gh * g / 4;
@@ -737,26 +935,37 @@ function drawStats(s) {
   }
   const plot = (vals, color) => {
     if (vals.length < 1) return;
-    ctx.strokeStyle = color; ctx.lineWidth = 2;
+    const grad = ctx.createLinearGradient(0, padT, 0, padT + gh);
+    grad.addColorStop(0, color + '55');
+    grad.addColorStop(1, color + '00');
     ctx.beginPath();
     for (let i = 0; i < vals.length; i++) {
       const x = X(i), y = Y(vals[i]);
       i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
     }
+    ctx.strokeStyle = color; ctx.lineWidth = 2;
+    ctx.shadowColor = color; ctx.shadowBlur = 8;
     ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.lineTo(X(vals.length - 1), padT + gh); ctx.lineTo(X(0), padT + gh); ctx.closePath();
+    ctx.fillStyle = grad; ctx.fill();
   };
   plot(s.out, '#fb923c');
-  plot(s.in, '#38bdf8');
-  ctx.fillStyle = '#5b6f95';
+  plot(s.in, '#00e5ff');
+  ctx.fillStyle = '#4b6a8f';
   ctx.fillText('60s', padL, h - 6);
   ctx.fillText('now', w - padR - 14, h - 6);
   ctx.restore();
 }
 async function probeCap(name) {
-  await fetch('/probe?cap=' + encodeURIComponent(name) + '&force=1', { method: 'POST' });
+  const r = await fetch('/probe?cap=' + encodeURIComponent(name) + '&force=1', { method: 'POST' });
+  say('PROBING :: ' + name.toUpperCase());
+  return r;
 }
 async function probeAll() {
-  await fetch('/probe?force=1', { method: 'POST' });
+  const r = await fetch('/probe?force=1', { method: 'POST' });
+  say('FULL DIAGNOSTIC RUN INITIATED');
+  return r;
 }
 function camOn() {
   const img = document.getElementById('camImg');
@@ -766,6 +975,9 @@ function camOn() {
     document.getElementById('camOnBtn').style.display = 'none';
     document.getElementById('camOffBtn').style.display = '';
     document.getElementById('camMsg').textContent = '';
+    document.getElementById('camCard').classList.add('live');
+    document.getElementById('liveTag').style.display = '';
+    say('LIVE FEED ONLINE');
   };
   img.onerror = () => {
     img.style.display = 'none';
@@ -781,13 +993,19 @@ function camOff() {
   document.getElementById('camOff').style.display = '';
   document.getElementById('camOnBtn').style.display = '';
   document.getElementById('camOffBtn').style.display = 'none';
+  document.getElementById('camCard').classList.remove('live');
+  document.getElementById('liveTag').style.display = 'none';
+  say('LIVE FEED OFFLINE');
   fetch('/cam/stop', { method: 'POST' }).catch(() => {});
 }
+document.addEventListener('keydown', e => {
+  if (e.key.toLowerCase() === 'r' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) probeAll();
+});
 let esFailed = 0;
 function wireSSE() {
   const es = new EventSource('/events');
   es.onopen = () => { esFailed = 0; document.getElementById('connTxt').textContent = '已连接';
-    document.getElementById('connDot').className = 'dot'; document.getElementById('connState').textContent = 'SSE 在线'; };
+    document.getElementById('connDot').className = 'dot ok'; document.getElementById('connState').textContent = 'SSE 在线'; };
   es.onerror = () => {
     esFailed++;
     document.getElementById('connTxt').textContent = '重连中(' + esFailed + ')';
