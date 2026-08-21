@@ -97,6 +97,19 @@ type Topic struct {
 	MCPCall     string `yaml:"mcp_call"`
 }
 
+// InferenceReload 配置推理服务热重载协议（OTA 激活阶段）。
+// mode: none | http | cmd
+//   http: 换链后 POST url 触发推理服务 reload；confirm=true 时轮询
+//         ready_url 直到 active_version == 目标版本（失败/超时 → agent 自动回滚）
+//   cmd : 执行 inference_restart_cmd（旧行为，向后兼容）
+type InferenceReload struct {
+	Mode           string `yaml:"mode"`            // none | http | cmd
+	URL            string `yaml:"url"`             // POST /reload
+	ReadyURL       string `yaml:"ready_url"`       // GET /health
+	TimeoutSeconds int    `yaml:"timeout_seconds"` // 加载+确认超时（默认 120）
+	Confirm        bool   `yaml:"confirm"`         // true=轮询确认生效
+}
+
 type OTA struct {
 	ServerURL           string `yaml:"server_url"`
 	ModelPath           string `yaml:"model_path"`
@@ -112,6 +125,8 @@ type OTA struct {
 	Task                string `yaml:"task"`                  // default task for this device, empty = not bound
 	DeviceCap           DeviceCap `yaml:"device_cap"`         // device capability, auto-detected unless overridden
 	Filter              OTAFilter `yaml:"filter"`             // candidate selection rules
+	InferenceReload     InferenceReload `yaml:"inference_reload"` // 热重载激活协议
+	V1VersionPath       string `yaml:"v1_version_path"`       // Manifest V1（如 channels/beta.json），switch_model 使用；空=不启用
 }
 
 // DeviceCap describes the deployment capability of this device. Zero
