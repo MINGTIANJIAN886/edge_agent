@@ -212,6 +212,19 @@ func PublishTools(client mqtt.Client, deviceID, topic string, rosVer ros.Version
 			},
 		},
 		{
+			Name:        "switch_model",
+			Description: "Switch to a specific model from the V1 manifest (by model_id, or best match by task)",
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]SchemaProperty{
+					"model_id":         {Type: "string", Description: "Exact model_id from the V1 manifest, e.g. yolo11n"},
+					"task":             {Type: "string", Description: "Task to match, e.g. object_detection"},
+					"require_accuracy": {Type: "number", Description: "Minimum accuracy required (0-1)"},
+					"max_latency":      {Type: "number", Description: "Maximum inference latency in ms"},
+				},
+			},
+		},
+		{
 			Name:        "probe_capabilities",
 			Description: "Actively probe device capabilities (camera/ota/ros/inference) and return structured results",
 			InputSchema: InputSchema{
@@ -374,6 +387,8 @@ func SubscribeCalls(client mqtt.Client, deviceID, callTopic, inferenceURL string
 			resp = handleCheckUpdate(cfg, client, deviceID, req)
 		case "rollback_model":
 			resp = handleRollback(cfg, client, deviceID, req)
+		case "switch_model":
+			resp = handleSwitchModel(cfg, client, deviceID, req)
 		case "probe_capabilities":
 			resp = handleProbeCapabilities(deviceID, mgr, req)
 		default:
@@ -553,6 +568,21 @@ func handleCheckUpdate(cfg *config.Config, client mqtt.Client, deviceID string, 
 
 func handleRollback(cfg *config.Config, client mqtt.Client, deviceID string, req MCPCallRequest) MCPCallResponse {
 	msg, err := ota.Rollback(cfg.OTA, client, deviceID, cfg.MQTT.Topic.Result)
+	if err != nil {
+		return MCPCallResponse{ID: req.ID, Success: false, Error: err.Error()}
+	}
+	return MCPCallResponse{ID: req.ID, Success: true, Result: msg}
+}
+
+// handleSwitchModel 实现 switch_model：从 Manifest V1 按 model_id 或 task
+// 选择模型 → 下载（缺失时）→ 换链 → 热重载激活（失败自动回滚）。
+func handleSwitchModel(cfg *config.Config, client mqtt.Client, deviceID string, req MCPCallRequest) MCPCallResponse {
+	modelID, _ := req.Params["model_id"].(string)
+	task, _ := req.Params["task"].(string)
+	requireAccuracy, _ := req.Params["require_accuracy"].(float64)
+	maxLatency, _ := req.Params["max_latency"].(float64)
+	msg, err := ota.SwitchModelV1(cfg.OTA, client, deviceID, cfg.MQTT.Topic.Result,
+		modelID, task, requireAccuracy, maxLatency)
 	if err != nil {
 		return MCPCallResponse{ID: req.ID, Success: false, Error: err.Error()}
 	}
