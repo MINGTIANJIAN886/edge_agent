@@ -1,6 +1,7 @@
 package ota
 
 import (
+	"compress/gzip"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -449,6 +450,86 @@ func CleanOldVersions(modelDir string, keep int) error {
 	return nil
 }
 
+// ActivateModel 在换链后调用推理服务热重载协议并确认生效。
+//
+// mode=http: POST inference_reload.url 触发 /reload，然后（若 confirm）
+//   轮询 ready_url 直到 active_version == targetVersion；失败/超时返回错误，
+//   由调用方执行自动回滚（旧引擎在推理服务内继续服务，零中断）。
+// mode=cmd: 执行 inference_restart_cmd（旧行为，向后兼容）。
+// mode=none/空: 仅换链，不执行激活动作。
+func ActivateModel(cfg config.OTA, targetVersion string) error {
+	r := cfg.InferenceReload
+	switch r.Mode {
+	case "http":
+		if r.URL == "" {
+			return fmt.Errorf("inference_reload.url not set")
+		}
+		timeout := r.TimeoutSeconds
+		if timeout <= 0 {
+			timeout = 120
+		}
+		httpc := &http.Client{Timeout: time.Duration(timeout) * time.Second}
+		resp, err := httpc.Post(r.URL, "application/json", nil)
+		if err != nil {
+			return fmt.Errorf("reload request failed: %w", err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode >= 400 {
+			return fmt.Errorf("reload returned HTTP %d", resp.StatusCode)
+		}
+		if r.Confirm {
+			if r.ReadyURL == "" {
+				return fmt.Errorf("inference_reload.ready_url not set (confirm mode)")
+			}
+			deadline := time.Now().Add(time.Duration(timeout) * time.Second)
+			for time.Now().Before(deadline) {
+				h, herr := fetchHealth(httpc, r.ReadyURL)
+				if herr == nil && h.Status == "ready" && h.ActiveVersion == targetVersion {
+					log.Printf("OTA: inference confirmed version %s", targetVersion)
+					return nil
+				}
+				time.Sleep(1 * time.Second)
+			}
+			return fmt.Errorf("reload confirm timeout (target %s)", targetVersion)
+		}
+		return nil
+	case "cmd":
+		if cfg.InferenceRestartCmd == "" {
+			return nil
+		}
+		log.Printf("Restarting inference: %s", cfg.InferenceRestartCmd)
+		cmd := exec.Command("sh", "-c", cfg.InferenceRestartCmd)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("restart failed: %s, output: %s", err, string(output))
+		}
+		return nil
+	default:
+		return nil
+	}
+}
+
+type healthInfo struct {
+	Status        string `json:"status"`
+	ActiveVersion string `json:"active_version"`
+}
+
+func fetchHealth(client *http.Client, url string) (*healthInfo, error) {
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("health HTTP %d", resp.StatusCode)
+	}
+	var h healthInfo
+	if err := json.NewDecoder(resp.Body).Decode(&h); err != nil {
+		return nil, err
+	}
+	return &h, nil
+}
+
 func Rollback(cfg config.OTA, client mqtt.Client, deviceID, resultTopic string) (string, error) {
 	state.mu.Lock()
 	defer state.mu.Unlock()
@@ -477,11 +558,9 @@ func Rollback(cfg config.OTA, client mqtt.Client, deviceID, resultTopic string) 
 	state.rollbackTo = currentName
 	msg := fmt.Sprintf("rollback to %s", state.rollbackTo)
 
-	if cfg.InferenceRestartCmd != "" {
-		cmd := exec.Command("sh", "-c", cfg.InferenceRestartCmd)
-		if output, err := cmd.CombinedOutput(); err != nil {
-			log.Printf("Restart after rollback failed: %v, output: %s", err, string(output))
-		}
+	// 激活协议：换回旧链后同样触发 reload 并确认
+	if err := ActivateModel(cfg, state.rollbackTo); err != nil {
+		log.Printf("Rollback: activate failed after rollback: %v", err)
 	}
 
 	publishResult(client, deviceID, resultTopic, true, msg)
@@ -562,8 +641,12 @@ func CheckNow(cfg config.OTA, client mqtt.Client, deviceID, resultTopic string, 
 
 	state.mu.Lock()
 	if symlinkPath != "" {
-		currentTarget, _ := GetSymlinkTarget(symlinkPath)
-		state.rollbackTo = filepath.Base(currentTarget)
+		// 注意：GetSymlinkTarget 失败时 currentTarget=""，
+		// filepath.Base("") 返回 "." 而非空串，会把回滚目标写成 model_dir
+		state.rollbackTo = ""
+		if currentTarget, err := GetSymlinkTarget(symlinkPath); err == nil && currentTarget != "" {
+			state.rollbackTo = filepath.Base(currentTarget)
+		}
 	}
 
 	if symlinkPath != "" {
@@ -581,15 +664,34 @@ func CheckNow(cfg config.OTA, client mqtt.Client, deviceID, resultTopic string, 
 		CleanOldVersions(cfg.ModelDir, cfg.BackupCount)
 	}
 
-	if cfg.InferenceRestartCmd != "" {
-		log.Printf("Restarting inference: %s", cfg.InferenceRestartCmd)
-		cmd := exec.Command("sh", "-c", cfg.InferenceRestartCmd)
-		if output, err := cmd.CombinedOutput(); err != nil {
-			return "", fmt.Errorf("restart failed: %s, output: %s", err, string(output))
+	// 激活协议：reload 推理服务并确认生效；失败自动回滚到旧版本
+	// （推理服务内旧引擎在加载期间继续服务，切换零中断）
+	switchStart := time.Now()
+	if err := ActivateModel(cfg, manifest.Version); err != nil {
+		// 仅当存在可回滚的旧版本时才回滚（首次部署失败直接报错）
+		if symlinkPath != "" && state.rollbackTo != "" {
+			rollbackDir := filepath.Join(cfg.ModelDir, state.rollbackTo)
+			if _, statErr := os.Stat(rollbackDir); statErr == nil {
+				if rerr := SwitchSymlink(rollbackDir, symlinkPath); rerr == nil {
+					log.Printf("OTA: auto-rolled back to %s after activate failure", state.rollbackTo)
+					// 回滚后让推理服务重新加载旧版本（旧引擎可能仍在服务，尽力同步）
+					if aerr := ActivateModel(cfg, state.rollbackTo); aerr != nil {
+						log.Printf("OTA: activate old version after rollback failed: %v", aerr)
+					}
+				} else {
+					log.Printf("OTA: auto-rollback symlink switch failed: %v", rerr)
+				}
+			} else {
+				log.Printf("OTA: rollback dir %s missing: %v", rollbackDir, statErr)
+			}
+		} else {
+			log.Printf("OTA: activate failed, no previous version to roll back to: %v", err)
 		}
+		return "", fmt.Errorf("activate failed (rolled back to %s): %w", state.rollbackTo, err)
 	}
+	switchMS := time.Since(switchStart).Milliseconds()
 
-	msg := fmt.Sprintf("updated to %s", manifest.Version)
+	msg := fmt.Sprintf("updated to %s (switch %dms)", manifest.Version, switchMS)
 	if resultTopic != "" && client != nil {
 		payload := fmt.Sprintf(`{"device_id":%q,"success":true,"message":%q,"task":%q,"model":%q,"version":%q,"model_task":%q,"accuracy":%.4f}`,
 			deviceID, msg, task, picked.Name, manifest.Version, picked.Task, picked.Accuracy)
@@ -647,6 +749,259 @@ func InitRollbackState(cfg config.OTA) {
 	state.rollbackTo = filepath.Base(target)
 	state.mu.Unlock()
 	log.Printf("OTA: rollback initialized to %s", state.rollbackTo)
+}
+
+// ==================== Manifest V1（channels/beta.json）====================
+
+// ManifestV1Artifact 是 V1 模型包内的单个文件。
+type ManifestV1Artifact struct {
+	Name        string `json:"name"`
+	URL         string `json:"url"`
+	SizeBytes   int64  `json:"size_bytes"`
+	SHA256      string `json:"sha256"`
+	Compression string `json:"compression"` // "" 或 "gzip"
+}
+
+// ManifestV1Model 是 V1 清单中的一个模型包（model_id + 多 artifact）。
+type ManifestV1Model struct {
+	ModelID     string               `json:"model_id"`
+	Version     string               `json:"version"`
+	Task        string               `json:"task"`
+	Tags        []string             `json:"tags"`
+	Accuracy    float64              `json:"accuracy"`
+	LatencyMS   float64              `json:"latency_ms"`
+	MinCPU      int                  `json:"min_cpu_cores"`
+	MinMemMB    int                  `json:"min_memory_mb"`
+	RequiresGPU bool                 `json:"requires_gpu"`
+	Artifacts   []ManifestV1Artifact `json:"artifacts"`
+	MetadataURL string               `json:"metadata_url"`
+}
+
+// ManifestV1 是 Manifest V1 顶层结构（schema_version=1.0）。
+type ManifestV1 struct {
+	SchemaVersion string            `json:"schema_version"`
+	Channel       string            `json:"channel"`
+	ReleaseID     int64             `json:"release_id"`
+	Models        []ManifestV1Model `json:"models"`
+}
+
+// FetchManifestV1 拉取并解析 Manifest V1（默认 channels/beta.json）。
+func FetchManifestV1(serverURL, versionPath string) (*ManifestV1, error) {
+	if versionPath == "" {
+		versionPath = "channels/beta.json"
+	}
+	url := strings.TrimRight(serverURL, "/") + "/" + versionPath
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("fetch V1 manifest failed: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read V1 manifest failed: %w", err)
+	}
+	var m ManifestV1
+	if err := json.Unmarshal(body, &m); err != nil {
+		return nil, fmt.Errorf("parse V1 manifest failed: %w", err)
+	}
+	if m.SchemaVersion != "1.0" {
+		return nil, fmt.Errorf("not a V1 manifest (schema_version=%q)", m.SchemaVersion)
+	}
+	return &m, nil
+}
+
+// ModelPackageDir 返回 V1 模型包目录：model_dir/versions/<model_id>/<version>。
+// 与旧版 model_dir/<version> 布局共存；消费端一律读 current 软链接。
+func ModelPackageDir(modelDir, modelID, version string) string {
+	return filepath.Join(modelDir, "versions", modelID, version)
+}
+
+// gunzipFile 解压 src 到 dst（Gitee 审核要求类别表/字典 gzip 存储）。
+func gunzipFile(src, dst string) error {
+	f, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return fmt.Errorf("gzip open %s failed: %w", src, err)
+	}
+	defer gz.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	if _, err := io.Copy(out, gz); err != nil {
+		return fmt.Errorf("gunzip %s failed: %w", src, err)
+	}
+	return nil
+}
+
+// EnsureModelPackage 确保模型包已下载并校验（缺失或损坏时重新下载）。
+// 返回包目录；已存在（model.ncnn.param 在位）时跳过下载。
+func EnsureModelPackage(cfg config.OTA, m ManifestV1Model) (string, error) {
+	dir := ModelPackageDir(cfg.ModelDir, m.ModelID, m.Version)
+	ready := func() bool {
+		for _, a := range m.Artifacts {
+			if !osFileExists(filepath.Join(dir, a.Name)) {
+				return false
+			}
+		}
+		return true
+	}
+	if ready() {
+		return dir, nil
+	}
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", err
+	}
+	for _, a := range m.Artifacts {
+		dest := filepath.Join(dir, a.Name)
+		if err := DownloadFile(a.URL, a.SHA256, dest); err != nil {
+			return "", fmt.Errorf("download %s failed: %w", a.Name, err)
+		}
+		if a.Compression == "gzip" && strings.HasSuffix(a.Name, ".gz") {
+			plain := strings.TrimSuffix(dest, ".gz")
+			if err := gunzipFile(dest, plain); err != nil {
+				return "", err
+			}
+		}
+	}
+	log.Printf("OTA: model package %s@%s ready at %s (%d files)",
+		m.ModelID, m.Version, dir, len(m.Artifacts))
+	return dir, nil
+}
+
+func osFileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}
+
+// SwitchModelV1 从 V1 manifest 选择并激活模型（switch_model MCP 工具）。
+//   - modelID 精确指定（优先）；否则按 task + 阈值筛选，score = accuracy + task 加成
+//   - 包缺失时自动下载（含 gzip 解压）
+//   - 换链后走 ActivateModel（热重载协议）；激活失败自动回滚
+func SwitchModelV1(cfg config.OTA, client mqtt.Client, deviceID, resultTopic string,
+	modelID, task string, requireAccuracy, maxLatency float64) (string, error) {
+
+	if cfg.ServerURL == "" {
+		return "", fmt.Errorf("OTA server_url not configured")
+	}
+	if cfg.V1VersionPath == "" {
+		return "", fmt.Errorf("v1_version_path not configured (switch_model 需要 Manifest V1)")
+	}
+	m, err := FetchManifestV1(cfg.ServerURL, cfg.V1VersionPath)
+	if err != nil {
+		return "", err
+	}
+	if len(m.Models) == 0 {
+		return "", fmt.Errorf("V1 manifest has no models")
+	}
+
+	// ---- 选模型 ----
+	var pick *ManifestV1Model
+	if modelID != "" {
+		for i := range m.Models {
+			if m.Models[i].ModelID == modelID {
+				pick = &m.Models[i]
+				break
+			}
+		}
+		if pick == nil {
+			return "", fmt.Errorf("model_id %q not found in V1 manifest", modelID)
+		}
+	} else {
+		cap := DetectDeviceCap(cfg.DeviceCap)
+		best, bestScore := -1, -1.0
+		for i := range m.Models {
+			mm := &m.Models[i]
+			if task != "" && mm.Task != task {
+				continue
+			}
+			if requireAccuracy > 0 && mm.Accuracy > 0 && mm.Accuracy < requireAccuracy {
+				continue
+			}
+			if maxLatency > 0 && mm.LatencyMS > 0 && mm.LatencyMS > maxLatency {
+				continue
+			}
+			if mm.MinCPU > 0 && cap.CPU > 0 && mm.MinCPU > cap.CPU {
+				continue
+			}
+			if mm.MinMemMB > 0 && cap.MemMB > 0 && mm.MinMemMB > cap.MemMB {
+				continue
+			}
+			if mm.RequiresGPU && !cap.HasGPU {
+				continue
+			}
+			score := mm.Accuracy
+			if task != "" && mm.Task == task {
+				score += 4.0
+			}
+			if score > bestScore {
+				best, bestScore = i, score
+			}
+		}
+		if best < 0 {
+			return "", fmt.Errorf("no model matches task=%q (acc>=%.2f lat<=%.0f)",
+				task, requireAccuracy, maxLatency)
+		}
+		pick = &m.Models[best]
+	}
+	log.Printf("OTA: switch_model picked %s@%s task=%s accuracy=%.4f",
+		pick.ModelID, pick.Version, pick.Task, pick.Accuracy)
+
+	// ---- 下载（缺失时）----
+	dir, err := EnsureModelPackage(cfg, *pick)
+	if err != nil {
+		return "", err
+	}
+
+	// ---- 激活（换链 + 热重载 + 失败回滚）----
+	symlinkPath := cfg.CurrentSymlink
+	if symlinkPath == "" {
+		symlinkPath = filepath.Join(cfg.ModelDir, "current")
+	}
+	state.mu.Lock()
+	state.rollbackTo = ""
+	if t, err := GetSymlinkTarget(symlinkPath); err == nil && t != "" {
+		state.rollbackTo = filepath.Base(t)
+	}
+	state.mu.Unlock()
+
+	switchStart := time.Now()
+	if err := SwitchSymlink(dir, symlinkPath); err != nil {
+		return "", fmt.Errorf("symlink switch failed: %w", err)
+	}
+	if err := ActivateModel(cfg, pick.Version); err != nil {
+		if state.rollbackTo != "" {
+			rollbackDir := filepath.Join(cfg.ModelDir, state.rollbackTo)
+			if _, statErr := os.Stat(rollbackDir); statErr == nil {
+				if rerr := SwitchSymlink(rollbackDir, symlinkPath); rerr == nil {
+					log.Printf("OTA: switch_model auto-rolled back to %s", state.rollbackTo)
+					ActivateModel(cfg, state.rollbackTo)
+				}
+			}
+		}
+		return "", fmt.Errorf("activate %s@%s failed (rolled back): %w",
+			pick.ModelID, pick.Version, err)
+	}
+	switchMS := time.Since(switchStart).Milliseconds()
+
+	msg := fmt.Sprintf("switched to %s@%s (switch %dms)", pick.ModelID, pick.Version, switchMS)
+	publishResult(client, deviceID, resultTopic, true, msg)
+	notifyUpdate(UpdateInfo{
+		Version:    pick.Version,
+		Model:      pick.ModelID,
+		RequestedTask: task,
+		ModelTask:  pick.Task,
+		Accuracy:   pick.Accuracy,
+		LatencyMS:  pick.LatencyMS,
+		UpdatedAt:  time.Now(),
+	})
+	return msg, nil
 }
 
 func publishResult(client mqtt.Client, deviceID, topic string, success bool, message string) {
