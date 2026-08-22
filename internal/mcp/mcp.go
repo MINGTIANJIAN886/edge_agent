@@ -72,7 +72,7 @@ type MCPCallResponse struct {
 	Error   string      `json:"error,omitempty"`
 }
 
-const AgentVersion = "1.2.0"
+const AgentVersion = "1.3.5"
 
 const agentVersion = AgentVersion
 
@@ -165,6 +165,18 @@ func PublishTools(client mqtt.Client, deviceID, topic string, rosVer ros.Version
 				Properties: map[string]SchemaProperty{
 					"unit":  {Type: "string", Description: "Journald unit filter (optional)"},
 					"lines": {Type: "integer", Description: "Number of log lines to return"},
+				},
+			},
+		},
+		{
+			Name:        "probe_capabilities",
+			Description: "Actively probe device capabilities (camera/device/ros/ota/inference) and return structured results",
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]SchemaProperty{
+					"capabilities":    {Type: "array", Description: "Optional list of capabilities to probe (camera/device/ros/ota/inference)"},
+					"force":           {Type: "boolean", Description: "true = re-probe, false = cached result ok"},
+					"timeout_seconds": {Type: "integer", Description: "Probe timeout in seconds (default 30)"},
 				},
 			},
 		},
@@ -391,6 +403,26 @@ func SubscribeCalls(client mqtt.Client, deviceID, callTopic, inferenceURL string
 			resp = handleSwitchModel(cfg, client, deviceID, req)
 		case "probe_capabilities":
 			resp = handleProbeCapabilities(deviceID, mgr, req)
+		case "ros_version":
+			resp = handleROSVersion()
+		case "ros_node_list":
+			resp = handleROSList("node")
+		case "ros_topic_list":
+			resp = handleROSList("topic")
+		case "ros_service_list":
+			resp = handleROSList("service")
+		case "ros_topic_echo":
+			resp = handleROSEcho(req)
+		case "ros_param_get":
+			resp = handleROSParam(req, "get")
+		case "ros_param_set":
+			resp = handleROSParam(req, "set")
+		case "ros_service_call":
+			resp = handleROSServiceCall(req)
+		case "car_cmd_vel":
+			resp = handleCarCmdVel(req)
+		case "car_emergency_stop":
+			resp = handleCarEmergencyStop()
 		default:
 			resp = MCPCallResponse{
 				ID:      req.ID,
@@ -399,6 +431,7 @@ func SubscribeCalls(client mqtt.Client, deviceID, callTopic, inferenceURL string
 			}
 		}
 
+		resp.ID = req.ID // 回填请求 ID（旧版缺失导致云端无法关联响应）
 		payload, _ := json.Marshal(resp)
 		respTopic := strings.Replace(callTopic, "/call", "/call/resp", 1)
 		client.Publish(respTopic, 1, false, payload)
@@ -629,4 +662,139 @@ func handleProbeCapabilities(deviceID string, mgr *profile.ProbeManager, req MCP
 		"results":   results,
 	}
 	return MCPCallResponse{ID: req.ID, Success: true, Result: payload}
+}
+
+// ---------- ROS 工具 handlers（通过 ros2 CLI 实现） ----------
+
+// ros2Bash 构造带 ROS 环境的 bash 命令（自动探测 distro，修复 HOME）
+func ros2Bash(args ...string) string {
+	// 用设备真实用户 HOME（复用其 ~/.ros daemon 与发现缓存，避免 /root 冷启动发现不全）
+	cmd := "export HOME=$(ls -d /home/* 2>/dev/null | head -1); [ -n \"$HOME\" ] || export HOME=/root; " +
+		"VER=$(ls /opt/ros 2>/dev/null | head -1); " +
+		"source /opt/ros/$VER/setup.bash >/dev/null 2>&1; ros2"
+	for _, a := range args {
+		cmd += " " + a
+	}
+	return cmd
+}
+
+func runROS(args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "bash", "-c", ros2Bash(args...)).CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
+
+func handleROSVersion() MCPCallResponse {
+	out, err := runROS("--version")
+	if err != nil && out == "" {
+		return MCPCallResponse{ID: "", Success: false, Error: "ros2 CLI 不可用: " + err.Error()}
+	}
+	distro := os.Getenv("ROS_DISTRO")
+	if distro == "" {
+		if v := strings.TrimSpace(strings.ReplaceAll(out, "ros2", "")); v != "" {
+			distro = v
+		}
+	}
+	return MCPCallResponse{Success: true, Result: map[string]string{
+		"version": "ros2", "distro": distro, "ros2_version": out,
+	}}
+}
+
+func handleROSList(kind string) MCPCallResponse {
+	// ROS2 daemon 冷启动时发现窗口未满，重试几次等收敛
+	var out string
+	var err error
+	for i := 0; i < 4; i++ {
+		out, err = runROS(kind, "list")
+		if err == nil && strings.Count(out, "/") >= 3 {
+			break
+		}
+		time.Sleep(4 * time.Second)
+	}
+	if err != nil {
+		return MCPCallResponse{Success: false, Error: fmt.Sprintf("ros2 %s list 失败: %v", kind, err)}
+	}
+	var items []string
+	for _, l := range strings.Split(out, "\n") {
+		if l = strings.TrimSpace(l); l != "" && !strings.HasPrefix(l, "WARNING") {
+			items = append(items, l)
+		}
+	}
+	return MCPCallResponse{Success: true, Result: items}
+}
+
+func handleROSEcho(req MCPCallRequest) MCPCallResponse {
+	topic, _ := req.Params["topic"].(string)
+	if topic == "" {
+		return MCPCallResponse{Success: false, Error: "topic 参数必填"}
+	}
+	out, err := runROS("topic", "echo", topic, "--once")
+	if err != nil {
+		return MCPCallResponse{Success: false, Error: fmt.Sprintf("echo %s 失败: %v", topic, err)}
+	}
+	return MCPCallResponse{Success: true, Result: out}
+}
+
+func handleROSParam(req MCPCallRequest, op string) MCPCallResponse {
+	node, _ := req.Params["node"].(string)
+	name, _ := req.Params["name"].(string)
+	if node == "" || name == "" {
+		return MCPCallResponse{Success: false, Error: "node 与 name 参数必填"}
+	}
+	var out string
+	var err error
+	if op == "get" {
+		out, err = runROS("param", "get", node, name)
+	} else {
+		value, _ := req.Params["value"].(string)
+		out, err = runROS("param", "set", node, name, value)
+	}
+	if err != nil {
+		return MCPCallResponse{Success: false, Error: fmt.Sprintf("param %s 失败: %v", op, err)}
+	}
+	return MCPCallResponse{Success: true, Result: out}
+}
+
+func handleROSServiceCall(req MCPCallRequest) MCPCallResponse {
+	service, _ := req.Params["service"].(string)
+	msgType, _ := req.Params["msg_type"].(string)
+	args, _ := req.Params["args"].(string)
+	if service == "" || msgType == "" {
+		return MCPCallResponse{Success: false, Error: "service 与 msg_type 参数必填"}
+	}
+	call := fmt.Sprintf("ros2 service call %s %s '%s'", service, msgType, args)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "bash", "-c", ros2Bash("service", "call", service, msgType, "'"+args+"'")).CombinedOutput()
+	_ = call
+	if err != nil {
+		return MCPCallResponse{Success: false, Error: fmt.Sprintf("service call 失败: %v", err)}
+	}
+	return MCPCallResponse{Success: true, Result: strings.TrimSpace(string(out))}
+}
+
+func handleCarCmdVel(req MCPCallRequest) MCPCallResponse {
+	lx, _ := req.Params["linear_x"].(float64)
+	az, _ := req.Params["angular_z"].(float64)
+	// 限制速度，防止异常参数
+	if lx > 2.0 || lx < -2.0 || az > 3.14 || az < -3.14 {
+		return MCPCallResponse{Success: false, Error: "速度超出安全范围 (|linear_x|<=2.0, |angular_z|<=3.14)"}
+	}
+	twist := fmt.Sprintf("{linear: {x: %f}, angular: {z: %f}}", lx, az)
+	out, err := runROS("topic", "pub", "--once", "/cmd_vel",
+		"geometry_msgs/msg/Twist", twist)
+	if err != nil {
+		return MCPCallResponse{Success: false, Error: fmt.Sprintf("cmd_vel 发布失败: %v", err)}
+	}
+	return MCPCallResponse{Success: true, Result: out}
+}
+
+func handleCarEmergencyStop() MCPCallResponse {
+	out, err := runROS("topic", "pub", "--once", "/cmd_vel",
+		"geometry_msgs/msg/Twist", "{linear: {x: 0.0}, angular: {z: 0.0}}")
+	if err != nil {
+		return MCPCallResponse{Success: false, Error: fmt.Sprintf("急停失败: %v", err)}
+	}
+	return MCPCallResponse{Success: true, Result: out}
 }
