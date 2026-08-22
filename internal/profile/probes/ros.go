@@ -49,10 +49,43 @@ func (p *ROSProbe) Probe(ctx context.Context, req profile.ProbeRequest) profile.
 		present[t] = topicPresent(topics, t)
 	}
 	details["topics"] = present
+	// 包→可执行文件映射（帮助云端 LLM 生成 launch 时避免臆造可执行文件）
+	if exes := listExecutables(ctx, ver); len(exes) > 0 {
+		details["executables"] = exes
+	}
 	if ver != ros.None {
 		return result(true, profile.CodeOK, "ROS environment detected", time.Since(start), details)
 	}
 	return result(false, "ROS_NOT_FOUND", "no ROS1/ROS2 installation detected", time.Since(start), details)
+}
+
+// listExecutables returns a package -> [executables] map for robot-relevant
+// ROS2 packages (only those likely needed for launch generation).
+func listExecutables(ctx context.Context, ver ros.Version) map[string][]string {
+	if ver != ros.ROS2 {
+		return nil
+	}
+	cctx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(cctx, "bash", "-c",
+		`VER=$(ls /opt/ros | head -1); export HOME=${HOME:-/root}; source /opt/ros/$VER/setup.bash 2>/dev/null;
+for p in $(ros2 pkg list 2>/dev/null | grep -E 'usb_cam|car_|ld_|d500|robot|imu|serial|motor|chassis|base|driver|slam|nav2_(amcl|bt_navigator|planner|controller|costmap|lifecycle|core|bringup)|ros2_control|controller_manager|joint_state|tf2_ros|lidar|camera|orbbec|depth|teleop|joy|scan' | head -60); do
+  ros2 pkg executables $p 2>/dev/null | tail -n +2 | while read -r _ ex; do [ -n "$ex" ] && echo "$p: $ex"; done
+done`)
+	out, err := cmd.CombinedOutput()
+	if err != nil && len(out) == 0 {
+		return nil
+	}
+	m := map[string][]string{}
+	for _, line := range strings.Split(string(out), "\n") {
+		if i := strings.Index(line, ":"); i > 0 {
+			pkg, exe := line[:i], strings.TrimSpace(line[i+1:])
+			if exe != "" {
+				m[pkg] = append(m[pkg], exe)
+			}
+		}
+	}
+	return m
 }
 
 // listTopics returns the topics currently present in the ROS graph
