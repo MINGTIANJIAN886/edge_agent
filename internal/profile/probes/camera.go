@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -151,5 +153,36 @@ func (p *CameraProbe) probeDevice(ctx context.Context, device string, timeout ti
 	if raw.Healthy != nil {
 		res.Healthy = *raw.Healthy
 	}
+	// 打开失败时检查是否被其他进程占用（如正在运行的 ROS 相机节点）：
+	// 被占用 = 摄像头工作正常，只是独占抓帧与运行节点冲突，不算故障。
+	if res.ErrorCode == profile.CodeCameraOpenFailed || res.ErrorCode == profile.CodeCameraBusy {
+		if users := fuserUsers(device); len(users) > 0 {
+			res.ErrorCode = profile.CodeCameraInUse
+			res.Message = fmt.Sprintf("摄像头被进程占用（正常使用中）: %s", strings.Join(users, ", "))
+			res.Available = true
+			res.Healthy = true
+			res.Details = map[string]interface{}{"device": device, "in_use_by": users}
+		}
+	}
 	return res
+}
+
+// fuserUsers returns "pid(comm)" entries of processes currently holding
+// the given device node open, or nil when no one is using it.
+func fuserUsers(device string) []string {
+	out, err := exec.Command("sh", "-c", "fuser "+device+" 2>&1").Output()
+	if err != nil && len(out) == 0 {
+		return nil
+	}
+	var names []string
+	for _, f := range strings.Fields(string(out)) {
+		if _, e := strconv.Atoi(f); e == nil {
+			if b, e2 := os.ReadFile("/proc/" + f + "/comm"); e2 == nil {
+				names = append(names, f+"("+strings.TrimSpace(string(b))+")")
+			} else {
+				names = append(names, f)
+			}
+		}
+	}
+	return names
 }
