@@ -51,6 +51,7 @@ const (
 	CodeCameraPermission    = "CAMERA_PERMISSION_DENIED"
 	CodeCameraOpenFailed    = "CAMERA_OPEN_FAILED"
 	CodeCameraBusy          = "CAMERA_BUSY"
+	CodeCameraInUse         = "CAMERA_IN_USE"
 	CodeCameraFrameTimeout  = "CAMERA_FRAME_TIMEOUT"
 	CodeCameraEmptyFrame    = "CAMERA_EMPTY_FRAME"
 	CodeCameraProbeCrashed  = "CAMERA_PROBE_CRASHED"
