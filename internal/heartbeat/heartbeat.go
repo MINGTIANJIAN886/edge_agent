@@ -26,6 +26,7 @@ type Status struct {
 	Load      string `json:"load"`
 	Memory    string `json:"memory"`
 	Disk      string `json:"disk"`
+	ROSNodes  string `json:"ros_nodes,omitempty"`
 }
 
 var startTime = time.Now()
@@ -53,6 +54,7 @@ func collectStatus(deviceID string) Status {
 		Load:      shell("cat /proc/loadavg | awk '{print \"1m=\"$1\" 5m=\"$2\" 15m=\"$3}'"),
 		Memory:    shell("free -h | awk 'NR==2{print \"total=\"$2\" used=\"$3\" free=\"$4}'"),
 		Disk:      shell("df -h / | awk 'NR==2{print \"total=\"$2\" used=\"$3\" avail=\"$4\" usage=\"$5}'"),
+		ROSNodes:  shell("VER=$(ls /opt/ros 2>/dev/null | head -1); [ -n \"$VER\" ] && timeout 5 bash -c \"source /opt/ros/$VER/setup.bash >/dev/null 2>&1; ros2 node list --no-daemon 2>/dev/null\" | wc -l"),
 	}
 }
 
